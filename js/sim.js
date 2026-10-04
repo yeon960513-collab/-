@@ -9,6 +9,7 @@
       atkMul: 1, hpMul: 1, asMul: 1, raceMul: { union: 1, swarm: 1, sanct: 1 },
       nexusDmgMul: 1, nexusShield: 0, nexusArmor: 0, nexusRegen: 0, turret: 0, decoy: false, gambler: false,
       mineralInc: 0, gasInc: 0, interestCap: 3, instantMinerals: 0, popBonus: 0,
+      siegeNx: 1, expandDiscount: 0, scoutFree: false, startGas: 0, gambitLossMul: 1.5, gambitWinBonus: 0, techDiscount: 0,
     };
   }
 
@@ -49,7 +50,7 @@
   function createBattle(a, b, opts) {
     opts = opts || {};
     const bt = {
-      t: 0, tick: 0, over: false, result: null, units: [], events: [], round: opts.round || 1,
+      event: opts.event || null, t: 0, tick: 0, over: false, result: null, units: [], events: [], round: opts.round || 1,
       setups: [a, b], nex: [null, null], grid: [], nextId: 1,
     };
     for (let y = 0; y < ROWS; y++) bt.grid.push(new Array(COLS).fill(0));
@@ -70,8 +71,11 @@
         if (base.race === 'swarm') asR *= [1, 1.15, 1.35][lv('swarm')];
         if (base.race === 'sanct') hp *= [1, 1.2, 1.45][lv('sanct')];
         if (base.tags.includes('infil')) { ms *= [1, 1.3, 1.3][lv('infil')]; nx *= [1, 1, 1.5][lv('infil')]; }
-        if (base.tags.includes('siege')) { nx *= [1, 1.3, 1.7][lv('siege')]; range += lv('siege') === 2 ? 1 : 0; }
+        if (base.tags.includes('siege')) { nx *= m.siegeNx * [1, 1.3, 1.7][lv('siege')]; range += lv('siege') === 2 ? 1 : 0; }
         armor += [0, 3, 6][lv('guard')];
+        if (opts.event === 'frost') { hp *= 0.85; atk *= 1.15; }
+        if (opts.event === 'fog') range = Math.max(1, range - 1);
+        if (opts.event === 'rush') ms *= 1.4;
         const u = {
           id: bt.nextId++, side, def: base, star: su.star || 1, x: g.gx, y: g.gy, px: g.gx, py: g.gy,
           maxHp: Math.round(hp), hp: Math.round(hp), shield: 0, atk, asR, ms, armor, range, nx,
@@ -144,7 +148,7 @@
     let left = d;
     if (tgt.shield > 0) { const a = Math.min(tgt.shield, left); tgt.shield -= a; left -= a; }
     tgt.hp -= left;
-    if (tgt.def.skill) tgt.mana += 4;
+    if (tgt.def.skill) tgt.mana += CFG.MANA_HIT * manaMul(bt, tgt);
     if (src) src.dmgDealt += d;
     if (tgt.hp <= 0 && tgt.alive) {
       tgt.alive = false; bt.grid[tgt.y][tgt.x] = 0; if (src) src.kills++;
@@ -162,6 +166,8 @@
     return d;
   }
 
+  // 마나 폭풍: 방어막 계열 스킬은 교착을 막기 위해 가속하지 않는다
+  function manaMul(bt, u) { return bt.event === 'mana' && u.def.skill.k !== 'shield' && u.def.skill.k !== 'barrier' ? 2 : 1; }
   function berserkMul(bt) { return bt.t > CFG.BERSERK_AT ? 1 + CFG.BERSERK_RATE * (bt.t - CFG.BERSERK_AT) : 1; }
 
   function cast(bt, u, tgt) {
@@ -169,8 +175,8 @@
     const foes = enemiesOf(bt, u.side), allies = alliesOf(bt, u.side);
     const v = (s.v || 0) * u.pow;
     switch (s.k) {
-      case 'shield': u.shield += v; break;
-      case 'barrier': allies.forEach((a) => { if (dist(u.x, u.y, a.x, a.y) <= s.radius + 0.01) a.shield += v; }); break;
+      case 'shield': u.shield = Math.max(u.shield, v); break;
+      case 'barrier': allies.forEach((a) => { if (dist(u.x, u.y, a.x, a.y) <= s.radius + 0.01) a.shield = Math.max(a.shield, v); }); break;
       case 'heal': {
         let best = null, br = 2;
         allies.forEach((a) => { const r = a.hp / a.maxHp; if (r < br && dist(u.x, u.y, a.x, a.y) <= 6) { br = r; best = a; } });
@@ -243,14 +249,14 @@
     if (u.atkCd > 0) return;
     u.atkCd = atkInterval(bt, u);
     dmgUnit(bt, u, e, u.atk);
-    if (u.def.skill) u.mana += 8;
+    if (u.def.skill) u.mana += 8 * manaMul(bt, u);
     bt.events.push({ t: bt.t, type: 'atk', from: u.id, to: e.id });
   }
   function attackNex(bt, u, n) {
     if (u.atkCd > 0) return;
     u.atkCd = atkInterval(bt, u);
     dmgNexus(bt, u, n, u.atk * u.nx);
-    if (u.def.skill) u.mana += 8;
+    if (u.def.skill) u.mana += 8 * manaMul(bt, u);
     bt.events.push({ t: bt.t, type: 'atkn', from: u.id, side: n.side });
   }
 

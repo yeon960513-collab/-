@@ -2,7 +2,7 @@
 (function (root) {
   const D = typeof module !== 'undefined' ? require('./data.js') : root.SC.data;
   const S = typeof module !== 'undefined' ? require('./sim.js') : root.SC.sim;
-  const { CFG, UNITS, UNIT_BY_ID, AUGMENTS, AUG_BY_ID, STAR } = D;
+  const { CFG, UNITS, UNIT_BY_ID, AUGMENTS, AUG_BY_ID, STAR, COMMANDERS, CMD_BY_ID, EVENTS } = D;
   const BOARD_W = CFG.COLS, BOARD_H = CFG.ROWS / 2;
   const NAMES = ['나', '아르투스', '벨라', '카이', '다이나', '에코', '플룩스', '그리프'];
 
@@ -20,10 +20,12 @@
         minerals: CFG.START_MINERALS, gas: 0, tech: 1, expansions: 0, nexusHp: CFG.NEXUS_HP, maxHp: CFG.NEXUS_HP,
         bench: new Array(CFG.BENCH).fill(null), board: Array.from({ length: BOARD_H }, () => new Array(BOARD_W).fill(null)),
         shop: [], winStreak: 0, loseStreak: 0, augments: [], mods: S.newMods(), gambit: false, scouted: false,
-        emergency: false, lastOpp: -1, aiOffset: Math.floor(this.rng() * 3), report: null, snapshot: null, rerollCount: 0,
+        commander: null, emergency: false, lastOpp: -1, aiOffset: Math.floor(this.rng() * 3), report: null, snapshot: null, rerollCount: 0,
       };
     });
     this.me = this.players[0];
+    this.event = null;
+    this.players.filter((p) => !p.human).forEach((p) => this.chooseCommander(p, this.pick(COMMANDERS).id));
     this.pending = { augment: null };
     this.pairs = [];
   }
@@ -39,6 +41,20 @@
   };
   P.popCount = function (p) { return this.boardUnits(p).length; };
   P.mkUnit = function (id) { return { id, star: 1, uid: this.uid++ }; };
+
+  // ---- 지휘관 ----
+  P.commanderOffers = function () {
+    const pool = COMMANDERS.slice(), out = [];
+    while (out.length < 3) out.push(pool.splice(this.rand(pool.length), 1)[0].id);
+    return out;
+  };
+  P.chooseCommander = function (p, id) {
+    const c = CMD_BY_ID[id]; p.commander = id; c.fx(p.mods);
+    p.gas += p.mods.startGas; p.mods.startGas = 0;
+    (c.start || []).forEach((uid) => { const i = this.firstEmptyBench(p); if (i >= 0) p.bench[i] = this.mkUnit(uid); });
+  };
+  P.techCost = function (p) { return Math.max(1, CFG.TECH_COST[p.tech + 1] - p.mods.techDiscount); };
+  P.expandCost = function (p) { return Math.max(1, CFG.EXPAND_COST - p.mods.expandDiscount); };
 
   // ---- 상점 ----
   P.rollTier = function (p) {
@@ -113,14 +129,15 @@
   };
   P.techUp = function (p) {
     if (p.tech >= 5) return { ok: false, msg: '최고 테크' };
-    const c = CFG.TECH_COST[p.tech + 1];
+    const c = this.techCost(p);
     if (p.gas < c) return { ok: false, msg: '가스 부족' };
     p.gas -= c; p.tech++; return { ok: true };
   };
   P.expand = function (p) {
     if (p.expansions >= CFG.MAX_EXPAND) return { ok: false, msg: '확장 한도' };
-    if (p.minerals < CFG.EXPAND_COST) return { ok: false, msg: '미네랄 부족' };
-    p.minerals -= CFG.EXPAND_COST; p.expansions++; return { ok: true };
+    const ec = this.expandCost(p);
+    if (p.minerals < ec) return { ok: false, msg: '미네랄 부족' };
+    p.minerals -= ec; p.expansions++; return { ok: true };
   };
   P.income = function (p) {
     const base = CFG.BASE_INCOME + Math.floor(this.round / 5) + p.mods.mineralInc + p.expansions * 2 + (this.hard && !p.human ? 2 : 0);
@@ -178,8 +195,8 @@
   P.aiTurn = function (p) {
     const tgt = [3, 6, 10, 15].map((r) => r + p.aiOffset);
     const want = 1 + tgt.filter((r) => this.round >= r).length;
-    while (p.tech < want && p.gas >= CFG.TECH_COST[p.tech + 1]) this.techUp(p);
-    if (p.expansions < 1 && this.round >= 4 && p.minerals >= CFG.EXPAND_COST + 4 && this.rng() < 0.5) this.expand(p);
+    while (p.tech < want && p.gas >= this.techCost(p)) this.techUp(p);
+    if (p.expansions < 1 && this.round >= 4 && p.minerals >= this.expandCost(p) + 4 && this.rng() < 0.5) this.expand(p);
     const reserve = this.round < 8 ? 10 : this.round < 14 ? 4 : 0;
     const have = () => { const m = {}; [].concat(p.bench, ...p.board).forEach((u) => u && (m[u.id] = (m[u.id] || 0) + 1)); return m; };
     for (let rr = 0; rr < 4; rr++) {
@@ -209,6 +226,8 @@
   P.isNeutral = function () { return CFG.NEUTRAL_ROUNDS.includes(this.round); };
   P.startRound = function () {
     this.round++; this.phase = 'prep'; this.pending.augment = null; this.report = null;
+    this.event = null;
+    if (this.round >= CFG.EVENT_FROM && !this.isNeutral() && this.rng() < CFG.EVENT_CHANCE) this.event = this.pick(EVENTS).id;
     this.alive().forEach((p) => {
       const inc = this.income(p);
       if (p.human) p.lastIncome = inc;
@@ -286,7 +305,7 @@
     this.phase = 'battle';
     this.oppLabel = label;
     this.humanPair = pair;
-    return S.createBattle(A, B, { round: this.round });
+    return S.createBattle(A, B, { round: this.round, event: this.event });
   };
 
   P.settleSide = function (p, side, r, opp) {
@@ -295,11 +314,11 @@
     let extra = 0;
     if (o === 'lose') {
       if (opp.kind === 'neutral') extra = 120;
-      else extra = Math.round((40 + 20 * r.survivorCost[1 - side]) * (p.gambit ? 1.5 : 1));
+      else extra = Math.round((40 + 20 * r.survivorCost[1 - side]) * (p.gambit ? p.mods.gambitLossMul : 1));
       if (r.reason !== 'nexus' || p.nexusHp > 0) p.nexusHp = Math.max(0, p.nexusHp - extra);
     }
     let bonus = 0;
-    if (o === 'win') { p.winStreak++; p.loseStreak = 0; if (p.gambit) bonus = p.mods.gambler ? 5 : 2; }
+    if (o === 'win') { p.winStreak++; p.loseStreak = 0; if (p.gambit) bonus = (p.mods.gambler ? 5 : 2) + p.mods.gambitWinBonus; }
     else if (o === 'lose') { p.loseStreak++; p.winStreak = 0; }
     p.minerals += bonus;
     p.report = { outcome: o, reason: r.reason, extra, bonus, time: r.time, opp: opp.label, dealt: r.nexusDealt[side],
@@ -320,7 +339,7 @@
       let r;
       const isHuman = pair === humanPair;
       const s = this.setupsFor(pair);
-      if (isHuman) r = humanResult; else r = S.runToEnd(S.createBattle(s.A, s.B, { round: this.round }));
+      if (isHuman) r = humanResult; else r = S.runToEnd(S.createBattle(s.A, s.B, { round: this.round, event: this.event }));
       const pa = this.players[pair.a];
       const oppA = { kind: pair.kind, label: s.label };
       // humanBattle 이 쌍을 뒤집어 만든 경우 방지: 사람이 b 쪽이면 사이드를 뒤집어 처리

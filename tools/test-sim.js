@@ -4,7 +4,7 @@ const S = require('../js/sim.js');
 const N = +process.argv[2] || 40;
 const stats = { games: 0, rounds: [], reasons: {}, times: [], winRace: {}, draws: 0, battles: 0, over55: 0, nexusWins: 0 };
 for (let s = 1; s <= N; s++) {
-  const g = new Game(s * 7919, false); g.simAll = true;
+  const g = new Game(s * 7919, false); g.simAll = true; g.chooseCommander(g.me, g.commanderOffers()[0]);
   // 사람 자리도 AI가 대신 플레이
   while (g.phase !== 'over' && g.round < 40) {
     g.startRound();
@@ -16,7 +16,7 @@ for (let s = 1; s <= N; s++) {
     const hp = pair.a === 0 ? pair : { ...pair, a: pair.b, b: pair.a };
     const { A, B } = g.setupsFor(hp);
     g.humanPair = pair;
-    const r = S.runToEnd(S.createBattle(A, B, { round: g.round }));
+    const r = S.runToEnd(S.createBattle(A, B, { round: g.round, event: g.event }));
     g.finishRound(r);
     stats.battles++; stats.reasons[r.reason] = (stats.reasons[r.reason] || 0) + 1; stats.times.push(r.time);
     if (r.time >= 54.9) stats.over55++;

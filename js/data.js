@@ -16,7 +16,7 @@
     // ---- 연합군 ----
     U({ id: 'rifle', race: 'union', name: '소총병', cost: 1, hp: 450, atk: 28, as: 0.8, range: 3, armor: 1, tags: ['range'] }),
     U({ id: 'shield', race: 'union', name: '방패병', cost: 1, hp: 700, atk: 22, as: 1.0, range: 1, armor: 4, tags: ['guard'],
-        skill: { k: 'shield', v: 300, mana: 50 } }),
+        skill: { k: 'shield', v: 220, mana: 65 } }),
     U({ id: 'medic', race: 'union', name: '의무병', cost: 2, hp: 500, atk: 14, as: 1.0, range: 3, armor: 0, tags: ['range'],
         skill: { k: 'heal', v: 260, mana: 45 } }),
     U({ id: 'tank', race: 'union', name: '공성전차', cost: 3, hp: 800, atk: 70, as: 1.8, range: 5, armor: 3, nx: 1.6, ms: 1.6, tags: ['siege', 'range'] }),
@@ -29,7 +29,7 @@
     U({ id: 'spitter', race: 'swarm', name: '독침충', cost: 2, hp: 450, atk: 36, as: 1.0, range: 3, tags: ['range'] }),
     U({ id: 'burrower', race: 'swarm', name: '땅굴벌레', cost: 2, hp: 600, atk: 30, as: 0.9, range: 1, ms: 2.6, tags: ['infil', 'melee'] }),
     U({ id: 'crusher', race: 'swarm', name: '분쇄수', cost: 3, hp: 1150, atk: 52, as: 1.3, range: 1, armor: 5, tags: ['guard', 'melee'],
-        skill: { k: 'shield', v: 400, mana: 55 } }),
+        skill: { k: 'shield', v: 300, mana: 70 } }),
     U({ id: 'queen', race: 'swarm', name: '여왕', cost: 4, hp: 800, atk: 38, as: 1.0, range: 3, armor: 1, tags: ['range'],
         skill: { k: 'haste', v: 0.4, dur: 5, radius: 3, mana: 50 } }),
     U({ id: 'colossus', race: 'swarm', name: '거신 괴수', cost: 5, hp: 3000, atk: 125, as: 1.5, range: 1, armor: 4, nx: 1.4, tags: ['siege', 'melee'],
@@ -87,9 +87,29 @@
   ];
   const AUG_BY_ID = Object.fromEntries(AUGMENTS.map((a) => [a.id, a]));
 
+  // 지휘관: 게임 시작 시 3택1. fx(mods) 로 패시브 적용, start: 시작 지급 유닛
+  const COMMANDERS = [
+    { id: 'miner', name: '광부 대장', desc: '매 라운드 미네랄 +1, 확장 비용 -2', fx: (m) => { m.mineralInc += 1; m.expandDiscount += 2; } },
+    { id: 'siege', name: '공성 사령관', desc: '공성 유닛 넥서스 피해 +25%, 시작 시 공성전차 1기', start: ['tank'], fx: (m) => (m.siegeNx *= 1.25) },
+    { id: 'fort', name: '요새 사령관', desc: '넥서스 방벽 +600, 넥서스 방어력 +4', fx: (m) => { m.nexusShield += 600; m.nexusArmor += 4; } },
+    { id: 'scout', name: '정찰 대장', desc: '정찰 무료, 시작 가스 +3', fx: (m) => { m.scoutFree = true; m.startGas += 3; } },
+    { id: 'raider', name: '돌격 대장', desc: '저격 선언 패배 페널티 ×1.2(기본 ×1.5), 승리 보너스 +2', fx: (m) => { m.gambitLossMul = 1.2; m.gambitWinBonus += 2; } },
+    { id: 'sage', name: '학자', desc: '매 라운드 가스 +1, 테크업 비용 -1(최소 1)', fx: (m) => { m.gasInc += 1; m.techDiscount += 1; } },
+  ];
+  const CMD_BY_ID = Object.fromEntries(COMMANDERS.map((c) => [c.id, c]));
+
+  // 전장 이벤트: 준비 단계에서 미리 공개되며 그 라운드의 모든 전투에 적용
+  const EVENTS = [
+    { id: 'fog', name: '짙은 안개', desc: '모든 유닛 사거리 -1 (최소 1)' },
+    { id: 'rush', name: '질주 지대', desc: '모든 유닛 이동속도 +40%' },
+    { id: 'mana', name: '마나 폭풍', desc: '마나 획득 2배 (스킬 빈번 발동)' },
+    { id: 'frost', name: '혹한', desc: '모든 유닛 체력 -15%, 공격력 +15%' },
+  ];
+  const EVENT_BY_ID = Object.fromEntries(EVENTS.map((e) => [e.id, e]));
+
   const CFG = {
     COLS, ROWS,
-    NEXUS_HP: 6000, ATK_SCALE: 1.35, NEXUS_SHIELD: 800, NEXUS_ARMOR: 8, NEXUS_R: 0.5,
+    NEXUS_HP: 6000, ATK_SCALE: 1.4, MANA_HIT: 3, NEXUS_SHIELD: 800, NEXUS_ARMOR: 8, NEXUS_R: 0.5,
     GRACE_ROUNDS: 3,              // 이 라운드까지 넥서스 직격 무효
     BATTLE_START_DELAY: 3, BERSERK_AT: 30, BERSERK_RATE: 0.1, BATTLE_MAX: 55,
     PREP_TIME: 30,
@@ -100,9 +120,9 @@
     SHOP_ODDS: [null, [100, 0, 0, 0, 0], [75, 25, 0, 0, 0], [55, 30, 15, 0, 0], [35, 30, 25, 10, 0], [20, 25, 30, 18, 7]],
     SHOP_SIZE: 5, BENCH: 8, REROLL: 2, EXPAND_COST: 6, MAX_EXPAND: 2,
     START_MINERALS: 8, BASE_INCOME: 5,
-    MAX_ROUNDS: 30,
+    MAX_ROUNDS: 30, EVENT_FROM: 4, EVENT_CHANCE: 0.4,
   };
 
-  const out = { COLS, ROWS, STAR, RACES, UNITS, UNIT_BY_ID, ROLE_NAMES, SYNERGIES, AUGMENTS, AUG_BY_ID, CFG };
+  const out = { COLS, ROWS, STAR, RACES, UNITS, UNIT_BY_ID, ROLE_NAMES, SYNERGIES, AUGMENTS, AUG_BY_ID, COMMANDERS, CMD_BY_ID, EVENTS, EVENT_BY_ID, CFG };
   if (typeof module !== 'undefined') module.exports = out; else root.SC = Object.assign(root.SC || {}, { data: out });
 })(typeof window !== 'undefined' ? window : globalThis);

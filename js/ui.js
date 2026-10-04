@@ -1,14 +1,14 @@
 /* 화면/입력/렌더링 */
 (function () {
   const D = SC.data, S = SC.sim, G = SC.game;
-  const { CFG, UNIT_BY_ID, RACES, SYNERGIES, AUG_BY_ID, ROLE_NAMES, STAR } = D;
+  const { CFG, UNIT_BY_ID, RACES, SYNERGIES, AUG_BY_ID, ROLE_NAMES, STAR, CMD_BY_ID, EVENT_BY_ID } = D;
   const CELL = 72, W = CFG.COLS * CELL, H = (CFG.ROWS + 2) * CELL;
   const $ = (s) => document.querySelector(s);
   const cv = $('#board'), ctx = cv.getContext('2d');
 
   let g = null, bt = null, mode = 'menu', sel = null, prepLeft = 0, speed = 1, acc = 0, last = 0;
   let fx = [], logs = [], endTimer = 0, flash = [0, 0], shake = 0, muted = false, hover = null, scoutInfo = null;
-  let audio = null;
+  let audio = null, prevSyn = {};
 
   // ---------- 사운드 ----------
   function beep(f, d, type, vol) {
@@ -82,13 +82,19 @@
       h = `<b>${o.name}</b> <span style="color:${RACES[o.race].color}">${RACES[o.race].name}</span><br>넥서스 ${o.nexusHp}/${o.maxHp}`;
       if (o.gambit) h += '<br><span style="color:var(--bad)">⚠ 상대가 저격을 선언했습니다</span>';
     }
+    if (g.event) { const ev = EVENT_BY_ID[g.event]; h += `<br><span style="color:var(--warn)">⚡ ${ev.name}: ${ev.desc}</span>`; }
     if (scoutInfo) h += `<hr style="border-color:var(--line)"><b>정찰 결과</b><br>` + scoutInfo;
-    else if (g.phase === 'prep') h += '<br><span class="dim">정찰(⛽1)로 편성을 확인하세요.</span>';
+    else if (g.phase === 'prep') h += '<br><span class="dim">정찰로 편성을 확인하세요.</span>';
     $('#oppBox').innerHTML = h;
   }
   function renderSyn() {
     const list = g.boardUnits(g.me);
     const syn = S.computeSynergies(list);
+    Object.keys(SYNERGIES).forEach((k) => {
+      const lv = syn[k].level;
+      if (lv > (prevSyn[k] || 0) && mode === 'prep') { sfx.merge(); toast(`⚡ ${SYNERGIES[k].name} 시너지 ${lv === 2 ? 'MAX' : '발동'}! ${SYNERGIES[k].desc[lv - 1]}`); }
+      prevSyn[k] = lv;
+    });
     const rows = Object.keys(SYNERGIES).map((k) => {
       const s = SYNERGIES[k], c = syn[k];
       if (!c.count) return '';
@@ -99,7 +105,9 @@
     $('#syn').innerHTML = rows || '<span class="dim">보드에 유닛을 배치하세요</span>';
   }
   function renderAugs() {
-    $('#augs').innerHTML = g.me.augments.length ? g.me.augments.map((id) => { const a = AUG_BY_ID[id]; return `<div title="${a.desc}"><span class="tag">${a.cat}</span>${a.name}</div>`; }).join('') : '<span class="dim">라운드 ' + CFG.AUG_ROUNDS.join(', ') + '에 선택</span>';
+    const cm = g.me.commander ? CMD_BY_ID[g.me.commander] : null;
+    const cmH = cm ? `<div title="${cm.desc}"><span class="tag">지휘관</span><b>${cm.name}</b></div>` : '';
+    $('#augs').innerHTML = cmH + (g.me.augments.length ? g.me.augments.map((id) => { const a = AUG_BY_ID[id]; return `<div title="${a.desc}"><span class="tag">${a.cat}</span>${a.name}</div>`; }).join('') : '<span class="dim">라운드 ' + CFG.AUG_ROUNDS.join(', ') + '에 선택</span>');
   }
   function renderShop() {
     const me = g.me;
@@ -138,12 +146,15 @@
   function renderButtons() {
     const me = g.me, prep = mode === 'prep';
     $('#btnReroll').disabled = !prep || me.minerals < CFG.REROLL;
-    const tc = CFG.TECH_COST[me.tech + 1];
+    const tc = g.techCost(me);
     $('#btnTech').textContent = me.tech >= 5 ? '테크 최대' : `테크업 (⛽${tc})`;
     $('#btnTech').disabled = !prep || me.tech >= 5 || me.gas < tc;
-    $('#btnExpand').disabled = !prep || me.expansions >= CFG.MAX_EXPAND || me.minerals < CFG.EXPAND_COST;
-    $('#btnExpand').textContent = `확장 ${me.expansions}/${CFG.MAX_EXPAND} (◆${CFG.EXPAND_COST})`;
-    $('#btnScout').disabled = !prep || me.gas < 1 || me.scouted || g.pairOf(0).kind === 'neutral';
+    const ec = g.expandCost(me);
+    $('#btnExpand').disabled = !prep || me.expansions >= CFG.MAX_EXPAND || me.minerals < ec;
+    $('#btnExpand').textContent = `확장 ${me.expansions}/${CFG.MAX_EXPAND} (◆${ec})`;
+    const free = me.mods.scoutFree;
+    $('#btnScout').textContent = free ? '정찰 (무료)' : '정찰 (⛽1)';
+    $('#btnScout').disabled = !prep || (!free && me.gas < 1) || me.scouted || g.pairOf(0).kind === 'neutral';
     $('#btnGambit').disabled = !prep || g.isNeutral();
     $('#btnGambit').classList.toggle('on', me.gambit);
     $('#btnGambit').textContent = me.gambit ? '저격 선언 중!' : '저격 선언';
@@ -184,8 +195,8 @@
   $('#btnSell').onclick = () => { if (sel) { afterAction(g.sell(g.me, sel), 'buy'); } };
   $('#btnGambit').onclick = () => { g.me.gambit = !g.me.gambit; renderAll(); if (g.me.gambit) toast('저격 선언: 수비 제외 유닛이 넥서스를 노립니다. 패배 시 피해 ×1.5'); };
   $('#btnScout').onclick = () => {
-    const me = g.me; if (me.gas < 1 || me.scouted) return;
-    me.gas -= 1; me.scouted = true;
+    const me = g.me; if ((!me.mods.scoutFree && me.gas < 1) || me.scouted) return;
+    if (!me.mods.scoutFree) me.gas -= 1; me.scouted = true;
     const m = myMatch(), { B } = g.setupsFor(m);
     const cnt = {};
     B.units.forEach((u) => { cnt[u.id] = (cnt[u.id] || 0) + 1; });
@@ -229,14 +240,20 @@
   // ---------- 라운드 흐름 ----------
   function newGame(hard) {
     g = new G.Game((Date.now() & 0xffffff) | 1, hard);
-    logs = []; closeModal(); nextRound();
+    logs = []; prevSyn = {}; closeModal(); mode = 'menu';
+    const offers = g.commanderOffers();
+    const cards = offers.map((id) => { const c = CMD_BY_ID[id]; return `<div class="aug gold" data-id="${id}"><div class="r">COMMANDER</div><div class="n">${c.name}</div><div>${c.desc}</div></div>`; }).join('');
+    modal(`<h2>지휘관 선택</h2><div class="dim">패시브가 한 판 내내 적용됩니다.</div><div class="row">${cards}</div>`, (m) => {
+      m.querySelectorAll('.aug').forEach((el) => (el.onclick = () => { g.chooseCommander(g.me, el.dataset.id); closeModal(); nextRound(); }));
+    });
   }
   function nextRound() {
     g.startRound(); mode = 'prep'; sel = null; scoutInfo = null; prepLeft = CFG.PREP_TIME; fx = []; bt = null;
     const li = g.me.lastIncome;
     log(`<b>라운드 ${g.round}</b> 수입 ◆${li.base}${li.streak ? ' +연속' + li.streak : ''}${li.interest ? ' +이자' + li.interest : ''}`);
-    $('#overlay').innerHTML = g.isNeutral() ? '<div><div class="big" style="font-size:30px;color:var(--warn)">중립 라운드</div></div>' : '';
-    setTimeout(() => { if (mode === 'prep') $('#overlay').innerHTML = ''; }, 1500);
+    if (g.event) log(`⚡ <b>${EVENT_BY_ID[g.event].name}</b> — ${EVENT_BY_ID[g.event].desc}`);
+    $('#overlay').innerHTML = g.event ? `<div><div class="big" style="font-size:30px;color:var(--warn)">⚡ ${EVENT_BY_ID[g.event].name}</div><div class="sub">${EVENT_BY_ID[g.event].desc}</div></div>` : g.isNeutral() ? '<div><div class="big" style="font-size:30px;color:var(--warn)">중립 라운드</div></div>' : '';
+    setTimeout(() => { if (mode === 'prep') $('#overlay').innerHTML = ''; }, 2200);
     renderAll(); renderHud();
     if (g.pending.augment) showAugment();
   }
@@ -277,7 +294,7 @@
     const mine = bt.units.filter((u) => u.alive && u.side === 0).length, foe = bt.units.filter((u) => u.alive && u.side === 1).length;
     const t = Math.min(CFG.BATTLE_MAX, bt.t), ber = bt.t > CFG.BERSERK_AT;
     const phase = bt.t < CFG.BATTLE_START_DELAY ? '준비' : ber ? `<b style="color:var(--bad)">광폭화 공속×${S.berserkMul(bt).toFixed(1)}</b>` : '교전';
-    el.innerHTML = `<b style="color:var(--good)">아군 ${mine}</b> vs <b style="color:var(--bad)">적 ${foe}</b> · ${phase} · ${t.toFixed(0)}s/${CFG.BATTLE_MAX}s`;
+    el.innerHTML = (bt.event ? `<span style="color:var(--warn)">⚡${EVENT_BY_ID[bt.event].name}</span> · ` : '') + `<b style="color:var(--good)">아군 ${mine}</b> vs <b style="color:var(--bad)">적 ${foe}</b> · ${phase} · ${t.toFixed(0)}s/${CFG.BATTLE_MAX}s`;
   }
 
   const REASON = { wipe: '상대 유닛 전멸', nexus: '넥서스 파괴', time: '시간 판정(남은 유닛 가치)', 'time-nexus': '시간 판정(넥서스 HP 비율)', 'wipe-nexus': '동시 전멸 → 넥서스 HP 비율', draw: '무승부' };
@@ -348,6 +365,7 @@
       <li><b>넥서스 공략</b>: 침투 유닛은 넥서스로 직행, <b>저격 선언</b>을 하면 수비 외 유닛 모두 넥서스를 노립니다(패배 시 피해 ×1.5, 승리 시 보너스). 초반 ${CFG.GRACE_ROUNDS}라운드는 직격 무효.</li>
       <li><b>수비</b>: 전열로 길 막기, 수비 시너지, 방벽/포탑 증강. 확장은 수입이 늘지만 방벽 -300.</li>
       <li><b>증강</b>: 라운드 ${CFG.AUG_ROUNDS.join('/')}에 3택1. 중립전: 라운드 ${CFG.NEUTRAL_ROUNDS.join('/')}.</li>
+      <li><b>지휘관</b>: 시작 시 3택1 패시브. <b>전장 이벤트</b>: 라운드 ${CFG.EVENT_FROM}부터 일부 라운드에 발생, 준비 단계에서 미리 공개됩니다.</li>
       <li>단축키: Space 전투 시작, D 리롤, F 테크업, E 판매.</li></ul>
       <div class="row"><button class="primary" id="ok">닫기</button></div>`, (m) => (m.querySelector('#ok').onclick = closeModal));
   }
