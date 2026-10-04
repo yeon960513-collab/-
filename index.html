@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>넥서스 오토배틀러</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="app">
+  <header id="top">
+    <div class="brand">⬡ NEXUS AUTO</div>
+    <div class="pill" id="roundInfo">라운드 -</div>
+    <div class="pill" id="timerInfo">-</div>
+    <div class="res"><span class="min" title="미네랄">◆ <b id="resMin">0</b></span>
+      <span class="gas" title="가스">⛽ <b id="resGas">0</b></span>
+      <span class="tech" title="테크 / 인구수">🏛 T<b id="resTech">1</b> · 👥 <b id="resPop">0/4</b></span></div>
+    <div class="nexbar" title="내 넥서스"><span>내 넥서스</span><div class="bar"><i id="myNexBar"></i><em id="myNexTxt"></em></div></div>
+    <div class="top-r"><button id="btnMute" class="ghost">🔊</button><button id="btnHelp" class="ghost">도움말</button></div>
+  </header>
+
+  <main id="main">
+    <aside id="left">
+      <h3>순위 / 상대</h3>
+      <ul id="players"></ul>
+      <h3>이번 상대</h3>
+      <div id="oppBox" class="box">-</div>
+    </aside>
+
+    <section id="center">
+      <div id="hud"></div>
+      <div id="boardWrap"><canvas id="board" width="504" height="720"></canvas>
+        <div id="overlay"></div><div id="vignette"></div></div>
+    </section>
+
+    <aside id="right">
+      <h3>시너지</h3><div id="syn" class="box"></div>
+      <h3>증강</h3><div id="augs" class="box"></div>
+      <h3>유닛 정보</h3><div id="inspect" class="box">유닛에 마우스를 올려보세요</div>
+      <h3>기록</h3><div id="log" class="box small"></div>
+    </aside>
+  </main>
+
+  <footer id="bottom">
+    <div id="shopRow">
+      <div id="shop"></div>
+      <div class="acts">
+        <button id="btnReroll">리롤 (◆2)</button>
+        <button id="btnTech">테크업</button>
+        <button id="btnExpand">확장 (◆6)</button>
+        <button id="btnScout">정찰 (⛽1)</button>
+        <button id="btnGambit" class="toggle">저격 선언</button>
+        <button id="btnSell" class="danger">판매</button>
+        <button id="btnGo" class="primary">전투 시작 ▶</button>
+      </div>
+    </div>
+    <div id="benchRow"><span class="lbl">벤치</span><div id="bench"></div></div>
+  </footer>
+</div>
+<div id="modal" class="hidden"></div>
+<script src="js/data.js"></script>
+<script src="js/sim.js"></script>
+<script src="js/game.js"></script>
+<script src="js/ui.js"></script>
+</body>
+</html>
