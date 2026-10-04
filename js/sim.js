@@ -2,6 +2,7 @@
 (function (root) {
   const D = typeof module !== 'undefined' ? require('./data.js') : root.SC.data;
   const { CFG, UNIT_BY_ID, STAR, SYNERGIES } = D;
+  const HEX = D.hex;
   const COLS = CFG.COLS, ROWS = CFG.ROWS, TICK = 0.1;
 
   function newMods() {
@@ -9,7 +10,7 @@
       atkMul: 1, hpMul: 1, asMul: 1, raceMul: { union: 1, swarm: 1, sanct: 1 },
       nexusDmgMul: 1, nexusShield: 0, nexusArmor: 0, nexusRegen: 0, turret: 0, decoy: false, gambler: false,
       mineralInc: 0, gasInc: 0, interestCap: 3, instantMinerals: 0, popBonus: 0,
-      siegeNx: 1, expandDiscount: 0, scoutFree: false, startGas: 0, gambitLossMul: 1.5, gambitWinBonus: 0, techDiscount: 0,
+      siegeNx: 1, airMul: 1, flak: false, expandDiscount: 0, scoutFree: false, startGas: 0, gambitLossMul: 1.5, gambitWinBonus: 0, techDiscount: 0,
     };
   }
 
@@ -51,9 +52,15 @@
     opts = opts || {};
     const bt = {
       event: opts.event || null, t: 0, tick: 0, over: false, result: null, units: [], events: [], round: opts.round || 1,
-      setups: [a, b], nex: [null, null], grid: [], nextId: 1,
+      setups: [a, b], nex: [null, null], grid: [], gridAir: [], blocked: [], terrain: opts.terrain || null, nextId: 1,
     };
-    for (let y = 0; y < ROWS; y++) bt.grid.push(new Array(COLS).fill(0));
+    for (let y = 0; y < ROWS; y++) { bt.grid.push(new Array(COLS).fill(0)); bt.gridAir.push(new Array(COLS).fill(0)); bt.blocked.push(new Array(COLS).fill(false)); }
+    bt.portals = [];
+    if (opts.terrain && D.TERRAIN_BY_ID[opts.terrain]) {
+      const T = D.TERRAIN_BY_ID[opts.terrain];
+      T.cells.forEach(([x, y]) => { bt.blocked[y][x] = true; });
+      bt.portals = (T.portals || []).map((p) => ({ side: p.side, inX: p.in[0], inY: p.in[1], outX: p.out[0], outY: p.out[1] }));
+    }
 
     [a, b].forEach((s, side) => {
       s.mods = s.mods || newMods();
@@ -73,18 +80,21 @@
         if (base.tags.includes('infil')) { ms *= [1, 1.3, 1.3][lv('infil')]; nx *= [1, 1, 1.5][lv('infil')]; }
         if (base.tags.includes('siege')) { nx *= m.siegeNx * [1, 1.3, 1.7][lv('siege')]; range += lv('siege') === 2 ? 1 : 0; }
         armor += [0, 3, 6][lv('guard')];
+        if (base.air) { hp *= m.airMul * [1, 1.15, 1.15][lv('air')]; atk *= m.airMul; ms *= [1, 1, 1.2][lv('air')]; nx *= [1, 1, 1.4][lv('air')]; }
+        if (s.gambit && !base.tags.includes('guard')) { nx *= CFG.GAMBIT_NX; ms *= CFG.GAMBIT_MS; } // 저격 선언: 돌격 태세
         if (opts.event === 'frost') { hp *= 0.85; atk *= 1.15; }
         if (opts.event === 'fog') range = Math.max(1, range - 1);
         if (opts.event === 'rush') ms *= 1.4;
         const u = {
-          id: bt.nextId++, side, def: base, star: su.star || 1, x: g.gx, y: g.gy, px: g.gx, py: g.gy,
+          id: bt.nextId++, side, def: base, star: su.star || 1, x: g.gx, y: g.gy, px: g.gx, py: g.gy, air: !!base.air, climb: !base.air && base.tags.includes('infil'), hits: base.hits, aaMul: base.aaMul,
           maxHp: Math.round(hp), hp: Math.round(hp), shield: 0, atk, asR, ms, armor, range, nx,
           pow: (atk / base.atk / CFG.ATK_SCALE), mana: base.skill ? base.skill.mana * 0.5 : 0, atkCd: 0.3, moveCd: 0,
           stun: 0, haste: 0, hasteV: 0, alive: true, dmgDealt: 0, nexDealt: 0, kills: 0,
           snipe: base.tags.includes('infil') || (s.gambit && !base.tags.includes('guard')),
         };
+        if (!u.air && bt.blocked[u.y][u.x]) relocate(bt, u);
         bt.units.push(u);
-        bt.grid[g.gy][g.gx] = u.id;
+        (u.air ? bt.gridAir : bt.grid)[u.y][u.x] = u.id;
       });
       const hasNex = !!s.nexus;
       if (hasNex) {
@@ -92,6 +102,7 @@
         bt.nex[side] = {
           side, hp: s.nexus.hp, maxHp: mx, shield: CFG.NEXUS_SHIELD + s.mods.nexusShield + (lv('guard') === 2 ? 600 : 0),
           armor: CFG.NEXUS_ARMOR + s.mods.nexusArmor, x: (COLS - 1) / 2, y: side === 0 ? ROWS : -1,
+          cells: [2, 3, 4].map((cx) => [cx, side === 0 ? ROWS : -1]),
           dealt: 0, turretCd: 1, grace: (opts.round || 1) <= CFG.GRACE_ROUNDS,
         };
         bt.nex[side].maxShield = bt.nex[side].shield;
@@ -102,7 +113,9 @@
   }
 
   // ---- 헬퍼 ----
-  const dist = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by);
+  // 육각 격자 거리(칸 수)
+  const dist = (ax, ay, bx, by) => HEX.dist(ax, ay, bx, by);
+  function nexDist(x, y, n) { let d = 1e9; for (const c of n.cells) { const k = HEX.dist(x, y, c[0], c[1]); if (k < d) d = k; } return d; }
   function enemiesOf(bt, side) { return bt.units.filter((u) => u.alive && u.side !== side); }
   function alliesOf(bt, side) { return bt.units.filter((u) => u.alive && u.side === side); }
   function nearest(u, list) {
@@ -111,21 +124,34 @@
     return best;
   }
   function inRangeUnit(u, e) { return dist(u.x, u.y, e.x, e.y) <= u.range + 1e-6; }
-  function inRangeNex(u, n) { return dist(u.x, u.y, n.x, n.y) <= u.range + CFG.NEXUS_R + 1e-6; }
-  const free = (bt, x, y) => x >= 0 && y >= 0 && x < COLS && y < ROWS && bt.grid[y][x] === 0;
+  function inRangeNex(u, n) { return nexDist(u.x, u.y, n) <= u.range + CFG.NEXUS_R; }
+  const inB = (x, y) => x >= 0 && y >= 0 && x < COLS && y < ROWS;
+  // 공중 유닛은 공중 레이어만, 지상 유닛은 절벽과 지상 점유를 피한다
+  const free = (bt, x, y, air, climb) => inB(x, y) && (air ? bt.gridAir[y][x] === 0 : ((climb || !bt.blocked[y][x]) && bt.grid[y][x] === 0));
+  // 지형 위에 놓인 지상 유닛을 같은 진영의 가장 가까운 빈 칸으로 옮긴다 (결정론적)
+  function relocate(bt, u) {
+    const half = u.side === 0 ? [ROWS / 2, ROWS - 1] : [0, ROWS / 2 - 1];
+    let best = null, bd = 1e9;
+    for (let y = half[0]; y <= half[1]; y++) for (let x = 0; x < COLS; x++) {
+      if (bt.blocked[y][x] || bt.grid[y][x] !== 0) continue;
+      const d = Math.abs(x - u.x) + Math.abs(y - u.y) * 1.01;
+      if (d < bd) { bd = d; best = [x, y]; }
+    }
+    if (best) { u.x = best[0]; u.y = best[1]; u.px = u.x; u.py = u.y; }
+  }
+  function canHit(bt, u, e) { return bt.t > CFG.BERSERK_AT || (e.air ? u.hits !== 'ground' : u.hits !== 'air'); }
 
   function bfsStep(bt, u, goalFn) {
     if (goalFn(u.x, u.y)) return null;
     const seen = new Map(); const key = (x, y) => y * COLS + x;
     const q = [[u.x, u.y]]; seen.set(key(u.x, u.y), null);
-    const dirs = [[0, -1], [0, 1], [-1, 0], [1, 0], [-1, -1], [1, -1], [-1, 1], [1, 1]];
-    // 전진 방향 우선
-    if (u.side === 0) dirs.sort((p, q2) => p[1] - q2[1]); else dirs.sort((p, q2) => q2[1] - p[1]);
+    const fwd = u.side === 0 ? -1 : 1, lean = (u.id % 2) ? 1 : -1; // 짝/홀 유닛이 좌/우 경로를 번갈아 선호 -> 동선 분산
+    const order = (cx, cy) => HEX.neighbors(cx, cy).slice().sort((p, q) => (Math.sign(q[1] * fwd) - Math.sign(p[1] * fwd)) || ((p[0] - q[0]) * lean));
     while (q.length) {
       const [cx, cy] = q.shift();
-      for (const [dx, dy] of dirs) {
+      for (const [dx, dy] of order(cx, cy)) {
         const nx = cx + dx, ny = cy + dy;
-        if (!free(bt, nx, ny) || seen.has(key(nx, ny))) continue;
+        if (!free(bt, nx, ny, u.air, u.climb) || seen.has(key(nx, ny))) continue;
         seen.set(key(nx, ny), [cx, cy]);
         if (goalFn(nx, ny)) {
           let c = [nx, ny], p = seen.get(key(nx, ny));
@@ -139,7 +165,8 @@
   }
 
   function moveTo(bt, u, cell) {
-    bt.grid[u.y][u.x] = 0; u.px = u.x; u.py = u.y; u.x = cell[0]; u.y = cell[1]; bt.grid[u.y][u.x] = u.id;
+    const G = u.air ? bt.gridAir : bt.grid;
+    G[u.y][u.x] = 0; u.px = u.x; u.py = u.y; u.x = cell[0]; u.y = cell[1]; G[u.y][u.x] = u.id;
     u.moveCd = 1 / u.ms; u.movedAt = bt.t;
   }
 
@@ -151,7 +178,7 @@
     if (tgt.def.skill) tgt.mana += CFG.MANA_HIT * manaMul(bt, tgt);
     if (src) src.dmgDealt += d;
     if (tgt.hp <= 0 && tgt.alive) {
-      tgt.alive = false; bt.grid[tgt.y][tgt.x] = 0; if (src) src.kills++;
+      tgt.alive = false; (tgt.air ? bt.gridAir : bt.grid)[tgt.y][tgt.x] = 0; if (src) src.kills++;
       bt.events.push({ t: bt.t, type: 'die', id: tgt.id });
     }
     return d;
@@ -159,7 +186,7 @@
 
   function dmgNexus(bt, src, n, amount) {
     if (n.grace) return 0;
-    let d = Math.max(1, Math.round(amount - n.armor)), left = d;
+    let d = Math.max(1, Math.round((amount - n.armor) * CFG.NEXUS_DMG_SCALE)), left = d;
     if (n.shield > 0) { const a = Math.min(n.shield, left); n.shield -= a; left -= a; }
     n.hp -= left; n.dealt += d; if (src) src.nexDealt += d;
     bt.events.push({ t: bt.t, type: 'nhit', side: n.side });
@@ -192,9 +219,9 @@
       }
       case 'blink': {
         const row = u.side === 0 ? 0 : ROWS - 1; let best = null, bd = 1e9;
-        for (let x = 0; x < COLS; x++) if (free(bt, x, row)) { const d = Math.abs(x - (COLS - 1) / 2); if (d < bd) { bd = d; best = x; } }
+        for (let x = 0; x < COLS; x++) if (free(bt, x, row, u.air)) { const d = Math.abs(x - (COLS - 1) / 2); if (d < bd) { bd = d; best = x; } }
         if (best === null) return false;
-        bt.grid[u.y][u.x] = 0; u.px = u.x; u.py = u.y; u.x = best; u.y = row; bt.grid[row][best] = u.id; u.movedAt = bt.t; break;
+        { const G = u.air ? bt.gridAir : bt.grid; G[u.y][u.x] = 0; u.px = u.x; u.py = u.y; u.x = best; u.y = row; G[row][best] = u.id; u.movedAt = bt.t; } break;
       }
       default: return false;
     }
@@ -205,23 +232,35 @@
   function actUnit(bt, u) {
     if (u.stun > 0) return;
     const foes = enemiesOf(bt, u.side);
+    const hittable = foes.filter((e) => canHit(bt, u, e)); // 공중/지상 공격 가능 여부
     const enemyNex = bt.nex[1 - u.side];
     const opp = bt.setups[1 - u.side];
     // 교란 장막: 침투 유닛 이동 불가
     const decoyed = opp.mods && opp.mods.decoy && u.def.tags.includes('infil') && bt.t < CFG.BATTLE_START_DELAY + 5;
     const nexTargetable = enemyNex && !enemyNex.grace;
     let target = null, tNex = false;
-    if (u.snipe && nexTargetable) tNex = true; else target = nearest(u, foes);
+    if (u.snipe && nexTargetable) tNex = true;
+    else { target = nearest(u, hittable); if (!target && nexTargetable) tNex = true; } // 때릴 수 있는 적이 없으면 넥서스로
     if (tNex) {
       if (inRangeNex(u, enemyNex)) {
         attackNex(bt, u, enemyNex);
         return;
       }
+      if (u.moveCd <= 0 && !decoyed && !u.air && u.def.tags.includes('infil') && !u.portalUsed && bt.portals.length) {
+        // 땅굴: 가장 가까운 입구로 이동 → 도착하면 적 넥서스 옆 출구로 순간이동
+        let best = null, bd = 1e9;
+        bt.portals.forEach((p) => { if (p.side !== u.side) return; const d = dist(u.x, u.y, p.inX, p.inY); if (d < bd) { bd = d; best = p; } });
+        if (best) {
+          if (u.x === best.inX && u.y === best.inY) { portalJump(bt, u, best); return; }
+          const st = bfsStep(bt, u, (x, y) => x === best.inX && y === best.inY);
+          if (st) { moveTo(bt, u, st); return; }
+        }
+      }
       if (u.moveCd <= 0 && !decoyed) {
-        const step = bfsStep(bt, u, (x, y) => dist(x, y, enemyNex.x, enemyNex.y) <= u.range + CFG.NEXUS_R + 1e-6);
+        const step = bfsStep(bt, u, (x, y) => nexDist(x, y, enemyNex) <= u.range + CFG.NEXUS_R);
         if (step) moveTo(bt, u, step);
         else if (step === undefined) { // 경로 없음 → 근처 적 교전
-          const t2 = nearest(u, foes); if (t2 && inRangeUnit(u, t2)) attackUnit(bt, u, t2);
+          const t2 = nearest(u, hittable); if (t2 && inRangeUnit(u, t2)) attackUnit(bt, u, t2);
         }
       }
       return;
@@ -241,6 +280,19 @@
     }
   }
 
+  function portalJump(bt, u, p) {
+    // 출구 주변에서 가장 가까운 빈 칸
+    let best = null, bd = 1e9;
+    for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
+      if (!free(bt, x, y, false, true)) continue;
+      const d = Math.abs(x - p.outX) + Math.abs(y - p.outY) * 1.01;
+      if (d < bd) { bd = d; best = [x, y]; }
+    }
+    u.portalUsed = true;
+    if (!best || bd > 3) return;
+    bt.grid[u.y][u.x] = 0; u.px = u.x; u.py = u.y; u.x = best[0]; u.y = best[1]; bt.grid[u.y][u.x] = u.id; u.movedAt = bt.t; u.moveCd = 0.5;
+    bt.events.push({ t: bt.t, type: 'tp', id: u.id, x: u.px, y: u.py });
+  }
   function atkInterval(bt, u) {
     const hmul = u.haste > 0 ? 1 + u.hasteV : 1;
     return u.def.as / (u.asR * berserkMul(bt) * hmul);
@@ -248,16 +300,16 @@
   function attackUnit(bt, u, e) {
     if (u.atkCd > 0) return;
     u.atkCd = atkInterval(bt, u);
-    dmgUnit(bt, u, e, u.atk);
+    const dd = dmgUnit(bt, u, e, u.atk * (e.air ? u.aaMul : 1));
     if (u.def.skill) u.mana += 8 * manaMul(bt, u);
-    bt.events.push({ t: bt.t, type: 'atk', from: u.id, to: e.id });
+    bt.events.push({ t: bt.t, type: 'atk', from: u.id, to: e.id, d: dd });
   }
   function attackNex(bt, u, n) {
     if (u.atkCd > 0) return;
     u.atkCd = atkInterval(bt, u);
-    dmgNexus(bt, u, n, u.atk * u.nx);
+    const dd = dmgNexus(bt, u, n, u.atk * u.nx);
     if (u.def.skill) u.mana += 8 * manaMul(bt, u);
-    bt.events.push({ t: bt.t, type: 'atkn', from: u.id, side: n.side });
+    bt.events.push({ t: bt.t, type: 'atkn', from: u.id, side: n.side, d: dd });
   }
 
   function costValue(list) { return list.reduce((s, u) => s + u.def.cost * STAR[u.star], 0); }
@@ -317,14 +369,13 @@
     // 포탑
     bt.nex.forEach((n, side) => {
       if (!n || n.grace) return;
-      const tur = bt.setups[side].mods.turret;
-      if (!tur) return;
+      const tur = CFG.NEXUS_TURRET + bt.setups[side].mods.turret; // 기본 방어 포탑 + 증강
       n.turretCd -= dt;
       if (n.turretCd <= 0) {
         n.turretCd += 1;
-        const foes = enemiesOf(bt, side).filter((e) => dist(e.x, e.y, n.x, n.y) <= 4);
+        const foes = enemiesOf(bt, side).filter((e) => nexDist(e.x, e.y, n) <= 4);
         const t = nearest({ x: n.x, y: n.y }, foes);
-        if (t) { dmgUnit(bt, null, t, tur); bt.events.push({ t: bt.t, type: 'turret', side, to: t.id }); }
+        if (t) { dmgUnit(bt, null, t, tur * (t.air ? (bt.setups[side].mods.flak ? 2 : 1.5) : 1)); bt.events.push({ t: bt.t, type: 'turret', side, to: t.id }); }
       }
     });
     // 마나가 넘친 유닛 정리, 사망 유닛 정리

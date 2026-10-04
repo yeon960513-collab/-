@@ -2,7 +2,7 @@
 (function (root) {
   const D = typeof module !== 'undefined' ? require('./data.js') : root.SC.data;
   const S = typeof module !== 'undefined' ? require('./sim.js') : root.SC.sim;
-  const { CFG, UNITS, UNIT_BY_ID, AUGMENTS, AUG_BY_ID, STAR, COMMANDERS, CMD_BY_ID, EVENTS } = D;
+  const { CFG, UNITS, UNIT_BY_ID, AUGMENTS, AUG_BY_ID, STAR, COMMANDERS, CMD_BY_ID, EVENTS, TERRAINS, TERRAIN_BY_ID } = D;
   const BOARD_W = CFG.COLS, BOARD_H = CFG.ROWS / 2;
   const NAMES = ['나', '아르투스', '벨라', '카이', '다이나', '에코', '플룩스', '그리프'];
 
@@ -24,7 +24,7 @@
       };
     });
     this.me = this.players[0];
-    this.event = null;
+    this.event = null; this.terrain = null;
     this.players.filter((p) => !p.human).forEach((p) => this.chooseCommander(p, this.pick(COMMANDERS).id));
     this.pending = { augment: null };
     this.pairs = [];
@@ -41,6 +41,26 @@
   };
   P.popCount = function (p) { return this.boardUnits(p).length; };
   P.mkUnit = function (id) { return { id, star: 1, uid: this.uid++ }; };
+
+  // ---- 지형 ----
+  P.isBlocked = function (gx, gy) {
+    const t = this.terrain && TERRAIN_BY_ID[this.terrain];
+    return !!t && t.cells.some((c) => c[0] === gx && c[1] === gy);
+  };
+  // 내 진영(아래쪽 절반)에 놓인 유닛 중 절벽 위의 것을 가장 가까운 빈 칸으로 이동
+  P.relocateBlocked = function (p) {
+    const H = CFG.ROWS / 2;
+    for (let y = 0; y < H; y++) for (let x = 0; x < CFG.COLS; x++) {
+      if (!p.board[y][x] || !this.isBlocked(x, H + y)) continue;
+      let best = null, bd = 1e9;
+      for (let yy = 0; yy < H; yy++) for (let xx = 0; xx < CFG.COLS; xx++) {
+        if (p.board[yy][xx] || this.isBlocked(xx, H + yy)) continue;
+        const d = Math.abs(xx - x) + Math.abs(yy - y) * 1.01;
+        if (d < bd) { bd = d; best = [xx, yy]; }
+      }
+      if (best) { p.board[best[1]][best[0]] = p.board[y][x]; p.board[y][x] = null; }
+    }
+  };
 
   // ---- 타이밍 공격 창 / 위장 ----
   P.timingWindow = function () {
@@ -114,6 +134,7 @@
     if (!a) return { ok: false };
     if (from.zone === to.zone && from.i === to.i && from.x === to.x && from.y === to.y) return { ok: false };
     // 벤치->보드 배치 시 인구수 제한
+    if (to.zone === 'board' && this.isBlocked(to.x, CFG.ROWS / 2 + to.y)) return { ok: false, msg: '절벽 위에는 배치할 수 없습니다' };
     if (from.zone === 'bench' && to.zone === 'board' && !b && this.popCount(p) >= this.cap(p)) return { ok: false, msg: '인구수 한도 (테크를 올리세요)' };
     this.set(p, from, b || null); this.set(p, to, a);
     return { ok: true };
@@ -219,11 +240,13 @@
     if (p.expansions < 1 && this.round >= 4 && p.minerals >= this.expandCost(p) + 4 && this.rng() < 0.5) this.expand(p);
     const reserve = this.round < 8 ? 10 : this.round < 14 ? 4 : 0;
     const have = () => { const m = {}; [].concat(p.bench, ...p.board).forEach((u) => u && (m[u.id] = (m[u.id] || 0) + 1)); return m; };
+    const hasAA = () => [].concat(p.bench, ...p.board).some((u) => u && UNIT_BY_ID[u.id].tags.includes('aa'));
+    const aaBonus = (id) => (this.round >= 4 && !hasAA() && UNIT_BY_ID[id].tags.includes('aa') ? 4 : 0); // AI도 공중 대비 대공 1기는 확보
     for (let rr = 0; rr < 4; rr++) {
       const h = have();
       const order = p.shop.map((id, i) => ({ id, i })).filter((s) => s.id).sort((a, b) => {
-        const sa = (h[a.id] || 0) * 3 + (UNIT_BY_ID[a.id].race === p.race ? 2 : 0) + UNIT_BY_ID[a.id].cost * 0.3;
-        const sb = (h[b.id] || 0) * 3 + (UNIT_BY_ID[b.id].race === p.race ? 2 : 0) + UNIT_BY_ID[b.id].cost * 0.3;
+        const sa = (h[a.id] || 0) * 3 + (UNIT_BY_ID[a.id].race === p.race ? 2 : 0) + UNIT_BY_ID[a.id].cost * 0.3 + aaBonus(a.id);
+        const sb = (h[b.id] || 0) * 3 + (UNIT_BY_ID[b.id].race === p.race ? 2 : 0) + UNIT_BY_ID[b.id].cost * 0.3 + aaBonus(b.id);
         return sb - sa;
       });
       for (const s of order) {
@@ -241,13 +264,15 @@
     }
     if (p.minerals >= 3 && this.rng() < 0.3) this.addDecoy(p);
     this.aiPlace(p);
+    this.relocateBlocked(p);
   };
 
   // ---- 라운드 진행 ----
   P.isNeutral = function () { return CFG.NEUTRAL_ROUNDS.includes(this.round); };
   P.startRound = function () {
     this.round++; this.phase = 'prep'; this.pending.augment = null; this.report = null;
-    this.event = null;
+    this.event = null; this.terrain = null;
+    if (this.round >= CFG.TERRAIN_FROM && !this.isNeutral() && this.rng() < CFG.TERRAIN_CHANCE) this.terrain = this.pick(TERRAINS).id;
     if (this.round >= CFG.EVENT_FROM && !this.isNeutral() && this.rng() < CFG.EVENT_CHANCE) this.event = this.pick(EVENTS).id;
     this.alive().forEach((p) => {
       const inc = this.income(p);
@@ -256,6 +281,7 @@
       p.gambit = false; p.scouted = false; p.rerollCount = 0; p.report = null; p.decoys = [];
       this.refreshShop(p);
     });
+    this.alive().forEach((p) => this.relocateBlocked(p));
     // 증강 (AI는 즉시 선택)
     if (CFG.AUG_ROUNDS.includes(this.round)) {
       this.alive().forEach((p) => {
@@ -327,7 +353,7 @@
     this.phase = 'battle';
     this.oppLabel = label;
     this.humanPair = pair;
-    return S.createBattle(A, B, { round: this.round, event: this.event });
+    return S.createBattle(A, B, { round: this.round, event: this.event, terrain: this.terrain });
   };
 
   P.settleSide = function (p, side, r, opp) {
@@ -336,7 +362,7 @@
     let extra = 0;
     if (o === 'lose') {
       if (opp.kind === 'neutral') extra = 120;
-      else extra = Math.round((40 + 20 * r.survivorCost[1 - side]) * (p.gambit ? p.mods.gambitLossMul : 1));
+      else extra = Math.round((CFG.LOSS_BASE + CFG.LOSS_PER * r.survivorCost[1 - side]) * (p.gambit ? p.mods.gambitLossMul : 1));
       if (r.reason !== 'nexus' || p.nexusHp > 0) p.nexusHp = Math.max(0, p.nexusHp - extra);
     }
     let bonus = 0;
@@ -361,7 +387,7 @@
       let r;
       const isHuman = pair === humanPair;
       const s = this.setupsFor(pair);
-      if (isHuman) r = humanResult; else r = S.runToEnd(S.createBattle(s.A, s.B, { round: this.round, event: this.event }));
+      if (isHuman) r = humanResult; else r = S.runToEnd(S.createBattle(s.A, s.B, { round: this.round, event: this.event, terrain: this.terrain }));
       const pa = this.players[pair.a];
       const oppA = { kind: pair.kind, label: s.label };
       // humanBattle 이 쌍을 뒤집어 만든 경우 방지: 사람이 b 쪽이면 사이드를 뒤집어 처리

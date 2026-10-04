@@ -16,7 +16,7 @@ for (let s = 1; s <= N; s++) {
     const hp = pair.a === 0 ? pair : { ...pair, a: pair.b, b: pair.a };
     const { A, B } = g.setupsFor(hp);
     g.humanPair = pair;
-    const r = S.runToEnd(S.createBattle(A, B, { round: g.round, event: g.event }));
+    const r = S.runToEnd(S.createBattle(A, B, { round: g.round, event: g.event, terrain: g.terrain }));
     g.finishRound(r);
     stats.battles++; stats.reasons[r.reason] = (stats.reasons[r.reason] || 0) + 1; stats.times.push(r.time);
     if (r.time >= 54.9) stats.over55++;

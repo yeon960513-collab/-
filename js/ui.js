@@ -1,14 +1,19 @@
 /* 화면/입력/렌더링 */
 (function () {
   const D = SC.data, S = SC.sim, G = SC.game;
-  const { CFG, UNIT_BY_ID, RACES, SYNERGIES, AUG_BY_ID, ROLE_NAMES, STAR, CMD_BY_ID, EVENT_BY_ID } = D;
-  const CELL = 72, W = CFG.COLS * CELL, H = (CFG.ROWS + 2) * CELL;
+  const { CFG, UNIT_BY_ID, RACES, SYNERGIES, AUG_BY_ID, ROLE_NAMES, STAR, CMD_BY_ID, EVENT_BY_ID, TERRAIN_BY_ID } = D;
+  const HEXD = D.hex;
+  const W = 504, H = 720;
+  // 육각 격자 픽셀 배치 (꼭짓점이 위쪽, odd-r)
+  const CELL2 = W / (CFG.COLS + 0.5), HR2 = CELL2 / Math.sqrt(3), ROWH = CELL2 * HEXD.H, YROW0 = H / 2 - (CFG.ROWS - 1) / 2 * ROWH;
+  function hexXY(col, row) { return { x: CELL2 / 2 + col * CELL2 + ((row & 1) ? CELL2 / 2 : 0), y: YROW0 + row * ROWH }; }
+  function hexPath(x, y, r) { ctx.beginPath(); for (let i = 0; i < 6; i++) { const a = Math.PI / 180 * (60 * i - 30); ctx.lineTo(x + r * Math.cos(a), y + r * Math.sin(a)); } ctx.closePath(); }
   const $ = (s) => document.querySelector(s);
   const cv = $('#board'), ctx = cv.getContext('2d');
 
   let g = null, bt = null, mode = 'menu', sel = null, prepLeft = 0, speed = 1, acc = 0, last = 0;
   let fx = [], logs = [], endTimer = 0, flash = [0, 0], shake = 0, muted = false, hover = null, scoutInfo = null;
-  let audio = null, prevSyn = {};
+  let audio = null, prevSyn = {}, view = null, use3d = false, hover3d = null;
 
   // ---------- 사운드 ----------
   function beep(f, d, type, vol) {
@@ -85,6 +90,7 @@
     const tw = g.timingWindow();
     if (tw) h += `<br><span style="color:${g.timingActive(g.me) ? 'var(--good)' : 'var(--warn)'}">⏱ 타이밍 공격 창(R${tw.round}~${tw.round + CFG.TIMING_LEN - 1}): 테크 ${tw.tech} 이상이면 공격력 +${Math.round((CFG.TIMING_ATK - 1) * 100)}%, 넥서스 피해 +${Math.round((CFG.TIMING_NX - 1) * 100)}% ${g.timingActive(g.me) ? '(활성!)' : '(미충족)'}</span>`;
     else { const nx = CFG.TIMINGS.find((t) => t.round > g.round); if (nx) h += `<br><span class="dim">⏱ 다음 타이밍 공격 창: R${nx.round} (테크 ${nx.tech})</span>`; }
+    if (g.terrain) { const tr = TERRAIN_BY_ID[g.terrain]; h += `<br><span style="color:var(--acc)">🏔 ${tr.name}: ${tr.desc}</span>`; }
     if (g.event) { const ev = EVENT_BY_ID[g.event]; h += `<br><span style="color:var(--warn)">⚡ ${ev.name}: ${ev.desc}</span>`; }
     if (scoutInfo) h += `<hr style="border-color:var(--line)"><b>정찰 결과</b><br>` + scoutInfo;
     else if (g.phase === 'prep') h += '<br><span class="dim">정찰로 편성을 확인하세요.</span>';
@@ -171,7 +177,7 @@
     const m = STAR[star] || 1;
     $('#inspect').innerHTML = `<b style="color:${RACES[d.race].color}">${d.name}</b> ${'★'.repeat(star)} <span class="dim">(◆${d.cost})</span><br>
       ${RACES[d.race].name} · ${tagNames(d)}<br>HP ${Math.round(d.hp * m)} · 공격 ${Math.round(d.atk * CFG.ATK_SCALE * m)} · 공속 ${(1 / d.as).toFixed(2)}/s<br>
-      사거리 ${d.range} · 방어 ${d.armor} · 이동 ${d.ms}<br>넥서스 피해 ×${d.nx}${d.tags.includes('infil') ? ' · <b>자동 저격</b>' : ''}<br>
+      사거리 ${d.range} · 방어 ${d.armor} · 이동 ${d.ms}<br>${d.air ? '<b style="color:#9fe8ff">✈ 공중</b>' : '지상'} · 공격 대상: <b>${d.hits === 'both' ? '지상+공중' : d.hits === 'air' ? '공중만 (대공 ×' + d.aaMul + ')' : '지상만'}</b>${d.tags.includes('infil') && !d.air ? ' · 절벽 통과·땅굴 사용' : ''}<br>넥서스 피해 ×${d.nx}${d.tags.includes('infil') ? ' · <b>자동 저격</b>' : ''}<br>
       <span class="dim">${skillDesc(d)}</span>`;
   }
 
@@ -225,7 +231,12 @@
   function cellAt(ev) {
     const r = cv.getBoundingClientRect();
     const x = (ev.clientX - r.left) / r.width * W, y = (ev.clientY - r.top) / r.height * H;
-    return { cx: Math.floor(x / CELL), gy: Math.floor(y / CELL) - 1 };
+    let best = { cx: -1, gy: -1 }, bd = HR2 * 1.02;
+    for (let gy = 0; gy < CFG.ROWS; gy++) for (let cx = 0; cx < CFG.COLS; cx++) {
+      const c = hexXY(cx, gy), d = Math.hypot(x - c.x, y - c.y);
+      if (d < bd) { bd = d; best = { cx, gy }; }
+    }
+    return best;
   }
   cv.addEventListener('click', (ev) => {
     if (mode !== 'prep') return;
@@ -258,8 +269,12 @@
     g.startRound(); mode = 'prep'; sel = null; scoutInfo = null; prepLeft = CFG.PREP_TIME; fx = []; bt = null;
     const li = g.me.lastIncome;
     log(`<b>라운드 ${g.round}</b> 수입 ◆${li.base}${li.streak ? ' +연속' + li.streak : ''}${li.interest ? ' +이자' + li.interest : ''}`);
+    if (g.terrain) log(`🏔 <b>${TERRAIN_BY_ID[g.terrain].name}</b> — ${TERRAIN_BY_ID[g.terrain].desc}`);
     if (g.event) log(`⚡ <b>${EVENT_BY_ID[g.event].name}</b> — ${EVENT_BY_ID[g.event].desc}`);
-    $('#overlay').innerHTML = g.event ? `<div><div class="big" style="font-size:30px;color:var(--warn)">⚡ ${EVENT_BY_ID[g.event].name}</div><div class="sub">${EVENT_BY_ID[g.event].desc}</div></div>` : g.isNeutral() ? '<div><div class="big" style="font-size:30px;color:var(--warn)">중립 라운드</div></div>' : '';
+    const banner = [];
+    if (g.terrain) banner.push(`<div class="big" style="font-size:26px;color:var(--acc)">🏔 ${TERRAIN_BY_ID[g.terrain].name}</div><div class="sub">${TERRAIN_BY_ID[g.terrain].desc}</div>`);
+    if (g.event) banner.push(`<div class="big" style="font-size:26px;color:var(--warn)">⚡ ${EVENT_BY_ID[g.event].name}</div><div class="sub">${EVENT_BY_ID[g.event].desc}</div>`);
+    $('#overlay').innerHTML = banner.length ? `<div>${banner.join('')}</div>` : g.isNeutral() ? '<div><div class="big" style="font-size:30px;color:var(--warn)">중립 라운드</div></div>' : '';
     setTimeout(() => { if (mode === 'prep') $('#overlay').innerHTML = ''; }, 2200);
     renderAll(); renderHud();
     if (g.pending.augment) showAugment();
@@ -301,7 +316,7 @@
     const mine = bt.units.filter((u) => u.alive && u.side === 0).length, foe = bt.units.filter((u) => u.alive && u.side === 1).length;
     const t = Math.min(CFG.BATTLE_MAX, bt.t), ber = bt.t > CFG.BERSERK_AT;
     const phase = bt.t < CFG.BATTLE_START_DELAY ? '준비' : ber ? `<b style="color:var(--bad)">광폭화 공속×${S.berserkMul(bt).toFixed(1)}</b>` : '교전';
-    el.innerHTML = (bt.event ? `<span style="color:var(--warn)">⚡${EVENT_BY_ID[bt.event].name}</span> · ` : '') + `<b style="color:var(--good)">아군 ${mine}</b> vs <b style="color:var(--bad)">적 ${foe}</b> · ${phase} · ${t.toFixed(0)}s/${CFG.BATTLE_MAX}s`;
+    el.innerHTML = (bt.terrain ? `<span style="color:var(--acc)">🏔${TERRAIN_BY_ID[bt.terrain].name}</span> · ` : '') + (bt.event ? `<span style="color:var(--warn)">⚡${EVENT_BY_ID[bt.event].name}</span> · ` : '') + `<b style="color:var(--good)">아군 ${mine}</b> vs <b style="color:var(--bad)">적 ${foe}</b> · ${phase} · ${t.toFixed(0)}s/${CFG.BATTLE_MAX}s`;
   }
 
   const REASON = { wipe: '상대 유닛 전멸', nexus: '넥서스 파괴', time: '시간 판정(남은 유닛 가치)', 'time-nexus': '시간 판정(넥서스 HP 비율)', 'wipe-nexus': '동시 전멸 → 넥서스 HP 비율', draw: '무승부' };
@@ -368,7 +383,8 @@
     ['② 배치', '벤치 유닛을 클릭한 뒤 <b>아래쪽 보드 칸</b>을 클릭해 배치하세요. 인구수(👥)만큼만 배치할 수 있고, 테크업으로 늘립니다.'],
     ['③ 시너지', '서로 다른 유닛 종류가 2~4개 모이면 종족/역할 시너지가 발동합니다. 오른쪽 패널에서 확인하세요.'],
     ['④ 승리 조건', '1:1 전투에서 <b>상대 유닛 전멸</b> 또는 <b>상대 넥서스 파괴</b>로 이깁니다. 전투는 1분 안에 끝나며 30초부터 공격속도가 계속 빨라집니다.'],
-    ['⑤ 넥서스 전략', '침투 유닛은 넥서스로 직행합니다. <b>저격 선언</b>은 한 방 승부(패배 시 피해 ×1.5). <b>정찰</b>로 상대 편성을, <b>위장</b>으로 가짜 편성을 보여줄 수 있어요. 초반 3라운드는 넥서스가 무적입니다.'],
+    ['⑤ 공중과 지형', '공중 유닛(✈)은 전열을 무시하고 넥서스로 갑니다. 지상 근접 유닛은 공중을 못 때리니 <b>대공 유닛</b>을 1기 이상 두세요. 라운드마다 절벽/땅굴 지형이 생기기도 합니다.'],
+    ['⑥ 넥서스 전략', '침투 유닛은 넥서스로 직행합니다. <b>저격 선언</b>은 한 방 승부(패배 시 피해 ×1.5). <b>정찰</b>로 상대 편성을, <b>위장</b>으로 가짜 편성을 보여줄 수 있어요. 초반 3라운드는 넥서스가 무적입니다.'],
   ];
   function maybeTutorial() {
     let seen = false;
@@ -395,6 +411,9 @@
       <li><b>넥서스 공략</b>: 침투 유닛은 넥서스로 직행, <b>저격 선언</b>을 하면 수비 외 유닛 모두 넥서스를 노립니다(패배 시 피해 ×1.5, 승리 시 보너스). 초반 ${CFG.GRACE_ROUNDS}라운드는 직격 무효.</li>
       <li><b>수비</b>: 전열로 길 막기, 수비 시너지, 방벽/포탑 증강. 확장은 수입이 늘지만 방벽 -300.</li>
       <li><b>증강</b>: 라운드 ${CFG.AUG_ROUNDS.join('/')}에 3택1. 중립전: 라운드 ${CFG.NEUTRAL_ROUNDS.join('/')}.</li>
+      <li><b>육각 타일</b>: 유닛은 6방향으로 이동하며 길이 여러 갈래로 갈라집니다.</li>
+      <li><b>공중·대공</b>: 공중 유닛(✈)은 지형과 전열을 넘어 넥서스로 직행합니다(저격 선언과 궁합). 근접/중장갑 지상 유닛은 공중을 공격하지 못하고, 대공 유닛은 공중만 공격합니다. 광폭화(30초)부터 모든 제한이 풀립니다.</li>
+      <li><b>지형</b>: 3라운드부터 일부 라운드에 절벽(협곡/측면 샛길/균열)이 생기고, 땅굴 지대에서는 침투 유닛이 입구로 들어가 적 넥서스 옆으로 나옵니다. 침투 유닛은 절벽도 넘습니다.</li>
       <li><b>지휘관</b>: 시작 시 3택1 패시브. <b>전장 이벤트</b>: 라운드 ${CFG.EVENT_FROM}부터 일부 라운드에 발생, 준비 단계에서 미리 공개됩니다.</li>
       <li><b>타이밍 공격 창</b>: R6/11/16부터 2라운드간, 해당 테크 이상이면 공격력·넥서스 피해 증가. <b>위장</b>: 정찰 당하는 상대에게 가짜 유닛이 보입니다.</li>
       <li>단축키: Space 전투 시작, D 리롤, F 테크업, E 판매.</li></ul>
@@ -413,15 +432,12 @@
   }
 
   // ---------- 렌더: 캔버스 ----------
-  function px(gx) { return gx * CELL + CELL / 2; }
-  function py(gy) { return (gy + 1) * CELL + CELL / 2; }
-  function disp(u) {
-    if (!bt) return { x: u.x, y: u.y };
-    const dur = Math.max(0.08, 1 / u.ms), f = Math.min(1, (bt.t - (u.movedAt || -9)) / dur);
-    return { x: u.px + (u.x - u.px) * f, y: u.py + (u.y - u.py) * f };
-  }
+  // 이동 보간 (셀 좌표 -> 픽셀 / 월드)
+  function moveF(u) { if (!bt) return 1; const dur = Math.max(0.08, 1 / u.ms); return Math.min(1, (bt.t - (u.movedAt || -9)) / dur); }
+  function dispPx(u) { const f = moveF(u), a = hexXY(u.px, u.py), b = hexXY(u.x, u.y); return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f }; }
+  function dispWorld(u) { const f = moveF(u), a = HEXD.world(u.px, u.py), b = HEXD.world(u.x, u.y); return { hx: a.x + (b.x - a.x) * f, hz: a.z + (b.z - a.z) * f }; }
   function drawNexus(side, n, label) {
-    const cx = W / 2, cy = side === 0 ? (CFG.ROWS + 1) * CELL + CELL / 2 : CELL / 2;
+    const cx = W / 2, cy = hexXY(3, side === 0 ? CFG.ROWS : -1).y;
     const f = flash[side] > 0;
     ctx.save(); ctx.translate(cx, cy);
     ctx.beginPath(); for (let i = 0; i < 6; i++) { const a = Math.PI / 3 * i + Math.PI / 6; ctx.lineTo(Math.cos(a) * 26, Math.sin(a) * 26); } ctx.closePath();
@@ -430,7 +446,7 @@
     ctx.fillStyle = '#fff'; ctx.font = 'bold 16px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('N', 0, 1);
     ctx.restore();
     if (n) {
-      const bw = 150, yy = side === 0 ? cy - 36 : cy + 28;
+      const bw = 150, yy = side === 0 ? cy + 30 : cy - 40;
       ctx.fillStyle = '#05070d'; ctx.fillRect(cx - bw / 2, yy, bw, 9);
       ctx.fillStyle = '#43d68a'; ctx.fillRect(cx - bw / 2, yy, bw * Math.max(0, n.hp / n.maxHp), 9);
       if (n.shield > 0) { ctx.fillStyle = '#7fd4ff'; ctx.fillRect(cx - bw / 2, yy - 4, bw * Math.min(1, n.shield / n.maxShield), 3); }
@@ -447,6 +463,7 @@
     ctx.beginPath(); ctx.arc(x, y, r - 5, 0, 7); ctx.fillStyle = col + '55'; ctx.fill();
     ctx.fillStyle = '#fff'; ctx.font = 'bold 18px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(d.name[0], x, y);
     ctx.fillStyle = '#ffd24a'; ctx.font = '11px sans-serif'; ctx.fillText('★'.repeat(u.star), x, y - r - 6);
+    if (d.air) { ctx.fillStyle = '#9fe8ff'; ctx.font = 'bold 13px sans-serif'; ctx.fillText('✈', x + r - 2, y - r + 6); }
     if (u.haste > 0) { ctx.strokeStyle = '#ffb54a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r + 4, 0, 7); ctx.stroke(); }
     // 체력/방어막/마나
     const bw = 46, bx = x - bw / 2, by = y + r + 3;
@@ -460,15 +477,24 @@
     ctx.save();
     if (shake > 0) ctx.translate((Math.random() - .5) * shake, (Math.random() - .5) * shake);
     ctx.clearRect(-10, -10, W + 20, H + 20);
+    const terr = bt ? bt.terrain : (g ? g.terrain : null);
+    const T = terr ? TERRAIN_BY_ID[terr] : null;
+    const isBlockedCell = (x, y) => !!T && T.cells.some((c) => c[0] === x && c[1] === y);
     for (let gy = 0; gy < CFG.ROWS; gy++) for (let x = 0; x < CFG.COLS; x++) {
-      const mine = gy >= CFG.ROWS / 2;
-      ctx.fillStyle = ((x + gy) % 2 ? '#10172a' : '#0d1322');
-      ctx.fillRect(x * CELL, (gy + 1) * CELL, CELL, CELL);
-      ctx.fillStyle = mine ? 'rgba(74,163,255,.07)' : 'rgba(255,93,108,.07)'; ctx.fillRect(x * CELL, (gy + 1) * CELL, CELL, CELL);
+      const mine = gy >= CFG.ROWS / 2, c = hexXY(x, gy);
+      hexPath(c.x, c.y, HR2 - 1.5);
+      ctx.fillStyle = ((x + gy) % 2 ? '#10172a' : '#0d1322'); ctx.fill();
+      ctx.fillStyle = mine ? 'rgba(74,163,255,.08)' : 'rgba(255,93,108,.08)'; ctx.fill();
+      ctx.strokeStyle = '#243051'; ctx.lineWidth = 1; ctx.stroke();
+      if (isBlockedCell(x, gy)) {
+        hexPath(c.x, c.y, HR2 - 1.5); ctx.fillStyle = '#3a3f52'; ctx.fill(); ctx.strokeStyle = '#6d7390'; ctx.lineWidth = 2; ctx.stroke();
+        ctx.fillStyle = '#8b92b3'; ctx.font = '22px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('▲', c.x, c.y + 1);
+      }
     }
-    ctx.strokeStyle = '#243051'; ctx.lineWidth = 1;
-    ctx.strokeRect(0, CELL, W, CFG.ROWS * CELL);
-    ctx.fillStyle = '#4a5a86'; ctx.fillRect(0, (CFG.ROWS / 2 + 1) * CELL - 1, W, 2);
+    if (T && T.portals) T.portals.forEach((p) => [[p.in, '#b06bff'], [p.out, '#4ae8ff']].forEach(([cell, col]) => {
+      const c = hexXY(cell[0], cell[1]); ctx.strokeStyle = col; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(c.x, c.y, HR2 * 0.55, 0, 7); ctx.stroke();
+      ctx.fillStyle = col + '55'; ctx.fill();
+    }));
 
     if (mode === 'prep' || mode === 'menu' || (mode === 'result' && !bt)) {
       // 내 보드
@@ -476,14 +502,14 @@
         const me = g.me;
         me.board.forEach((row, y) => row.forEach((u, x) => {
           const sc = sel && sel.zone === 'board' && sel.x === x && sel.y === y;
-          if (sc) { ctx.fillStyle = 'rgba(94,225,255,.25)'; ctx.fillRect(x * CELL, (CFG.ROWS / 2 + y + 1) * CELL, CELL, CELL); }
-          if (u) drawUnit({ def: UNIT_BY_ID[u.id], star: u.star, side: 0, hp: 1, maxHp: 1, shield: 0, mana: 0, stun: 0, haste: 0 }, px(x), py(CFG.ROWS / 2 + y));
+          const c = hexXY(x, CFG.ROWS / 2 + y);
+          if (sc) { hexPath(c.x, c.y, HR2 - 1.5); ctx.fillStyle = 'rgba(94,225,255,.3)'; ctx.fill(); }
+          if (u) drawUnit({ def: UNIT_BY_ID[u.id], star: u.star, side: 0, hp: 1, maxHp: 1, shield: 0, mana: 0, stun: 0, haste: 0 }, c.x, c.y);
         }));
-        if (sel) { ctx.fillStyle = 'rgba(94,225,255,.08)'; ctx.fillRect(0, (CFG.ROWS / 2 + 1) * CELL, W, CFG.ROWS / 2 * CELL); }
         // 정찰 표시
         if (me.scouted && g.pairs.length) {
           const { B } = g.setupsFor(myMatch());
-          B.units.forEach((u) => { const gp = S.toGlobal(1, u.x, u.y); drawUnit({ def: UNIT_BY_ID[u.id], star: u.star || 1, side: 1, hp: 1, maxHp: 1, shield: 0, mana: 0, stun: 0, haste: 0 }, px(gp.gx), py(gp.gy)); });
+          B.units.forEach((u) => { const gp = S.toGlobal(1, u.x, u.y), c = hexXY(gp.gx, gp.gy); drawUnit({ def: UNIT_BY_ID[u.id], star: u.star || 1, side: 1, hp: 1, maxHp: 1, shield: 0, mana: 0, stun: 0, haste: 0 }, c.x, c.y); });
         }
         const m = g.pairs.length ? myMatch() : null;
         const opp = m && m.kind === 'pvp' ? g.players[m.b] : null;
@@ -493,7 +519,7 @@
     } else if (bt) {
       drawNexus(1, bt.nex[1], bt.nex[1] ? '' : '(중립: 넥서스 없음)');
       drawNexus(0, bt.nex[0]);
-      bt.units.forEach((u) => { if (u.alive) { const p = disp(u); drawUnit(u, px(p.x), py(p.y)); } });
+      bt.units.forEach((u) => { if (u.alive) { const p = dispPx(u); drawUnit(u, p.x, p.y - (u.air ? 12 : 0)); } });
       // 효과
       fx.forEach((e) => {
         const a = Math.max(0, e.life / e.max);
@@ -512,21 +538,78 @@
     for (const e of bt.events) {
       if (e.type === 'atk' || e.type === 'atkn') {
         const f = byId[e.from]; if (!f || !f.alive) continue;
-        const a = disp(f);
+        const a = dispPx(f);
         let x2, y2;
-        if (e.type === 'atk') { const t = byId[e.to]; if (!t) continue; const q = disp(t); x2 = px(q.x); y2 = py(q.y); }
-        else { const n = bt.nex[e.side]; x2 = W / 2; y2 = e.side === 0 ? (CFG.ROWS + 1) * CELL + CELL / 2 : CELL / 2; flash[e.side] = 0.12; if (Math.random() < 0.3) sfx.nex(); }
-        fx.push({ type: 'line', x1: px(a.x), y1: py(a.y), x2, y2, col: f.side === 0 ? '#9dffd0' : '#ff9aa5', life: 0.12, max: 0.12 });
+        if (e.type === 'atk') { const t = byId[e.to]; if (!t) continue; const q = dispPx(t); x2 = q.x; y2 = q.y; }
+        else { const n = bt.nex[e.side]; x2 = W / 2; y2 = hexXY(3, e.side === 0 ? CFG.ROWS : -1).y; flash[e.side] = 0.12; if (Math.random() < 0.3) sfx.nex(); }
+        fx.push({ type: 'line', x1: a.x, y1: a.y, x2, y2, col: f.side === 0 ? '#9dffd0' : '#ff9aa5', life: 0.12, max: 0.12 });
         if (Math.random() < 0.15) sfx.hit();
       } else if (e.type === 'die') {
-        const u = byId[e.id]; if (u) fx.push({ type: 'ring', x1: px(u.x), y1: py(u.y), col: u.side === 0 ? '#43d68a' : '#ff5d6c', life: 0.4, max: 0.4 });
+        const u = byId[e.id]; if (u) { const c = hexXY(u.x, u.y); fx.push({ type: 'ring', x1: c.x, y1: c.y, col: u.side === 0 ? '#43d68a' : '#ff5d6c', life: 0.4, max: 0.4 }); }
       } else if (e.type === 'skill') {
-        const u = byId[e.id]; if (u) { const p = disp(u); fx.push({ type: 'text', x1: px(p.x), y1: py(p.y) - 34, text: SK[e.k] || '', col: '#ffe08a', life: 0.7, max: 0.7 }); }
+        const u = byId[e.id]; if (u) { const p = dispPx(u); fx.push({ type: 'text', x1: p.x, y1: p.y - 34, text: SK[e.k] || '', col: '#ffe08a', life: 0.7, max: 0.7 }); }
       } else if (e.type === 'turret') {
-        const t = byId[e.to]; if (t) fx.push({ type: 'ring', x1: px(t.x), y1: py(t.y), col: '#ffb54a', life: 0.3, max: 0.3 });
+        const t = byId[e.to]; if (t) { const c = hexXY(t.x, t.y); fx.push({ type: 'ring', x1: c.x, y1: c.y, col: '#ffb54a', life: 0.3, max: 0.3 }); }
       } else if (e.type === 'nhit') { /* 위에서 처리 */ }
     }
+    if (use3d && view) view.onEvents(bt, bt.events);
     bt.events.length = 0;
+  }
+
+  // ---------- 3D 뷰 ----------
+  function build3dState() {
+    const st = { mode, units: [], nexus: [null, null], sel: null, hover: hover3d, shake: 0, terrain: bt ? bt.terrain : (g ? g.terrain : null) };
+    const mk = (key, def, star, side, hx, hz, o) => st.units.push(Object.assign({ key, def, star, side, hx, hz, hp: 1, maxHp: 1, shield: 0, mana: 0, stun: 0, haste: 0 }, o || {}));
+    if (bt && (mode === 'battle' || mode === 'result')) {
+      bt.units.forEach((u) => { if (u.alive) { const p = dispWorld(u); mk('u' + u.id, u.def, u.star, u.side, p.hx, p.hz, { hp: u.hp, maxHp: u.maxHp, shield: u.shield, mana: u.mana, stun: u.stun, haste: u.haste }); } });
+      st.nexus = [bt.nex[0], bt.nex[1]];
+    } else if (g) {
+      const me = g.me;
+      me.board.forEach((row, y) => row.forEach((u, x) => { if (u) { const w = HEXD.world(x, CFG.ROWS / 2 + y); mk('m' + u.uid, UNIT_BY_ID[u.id], u.star, 0, w.x, w.z); } }));
+      const m = g.pairs.length ? myMatch() : null;
+      if (me.scouted && m) {
+        const { B } = g.setupsFor(m);
+        B.units.forEach((u, i) => { const gp = S.toGlobal(1, u.x, u.y), w = HEXD.world(gp.gx, gp.gy); mk('e' + i, UNIT_BY_ID[u.id], u.star || 1, 1, w.x, w.z); });
+      }
+      const opp = m && m.kind === 'pvp' ? g.players[m.b] : null;
+      st.nexus = [{ hp: me.nexusHp, maxHp: me.maxHp, shield: 0, maxShield: 0, grace: g.round <= CFG.GRACE_ROUNDS }, opp ? { hp: opp.nexusHp, maxHp: opp.maxHp, shield: 0, maxShield: 0, grace: g.round <= CFG.GRACE_ROUNDS } : null];
+      if (sel && sel.zone === 'board') st.sel = { gx: sel.x, gy: CFG.ROWS / 2 + sel.y };
+      if (sel && sel.zone === 'bench') st.sel = null;
+    } else {
+      st.nexus = [{ hp: 1, maxHp: 1, shield: 0, maxShield: 0 }, { hp: 1, maxHp: 1, shield: 0, maxShield: 0 }];
+    }
+    if (shake > 0) st.shake = shake / 14 * 2;
+    return st;
+  }
+  function setView3d(on) {
+    use3d = !!(on && view);
+    cv.style.display = use3d ? 'none' : 'block';
+    if (view) view.setVisible(use3d);
+    $('#btnView').textContent = use3d ? '2D 보기' : '3D 보기';
+    if (use3d) view.resize();
+  }
+  function initView() {
+    try { view = SC.view3d ? SC.view3d.create($('#boardWrap')) : null; } catch (e) { view = null; }
+    if (!view) { $('#btnView').style.display = 'none'; return; }
+    view.canvas.addEventListener('click', (ev) => {
+      if (mode !== 'prep' || view.wasDrag()) return;
+      const c = view.pick(ev.clientX, ev.clientY);
+      if (!c || c.gx < 0 || c.gx >= CFG.COLS || c.gy < CFG.ROWS / 2 || c.gy >= CFG.ROWS) return;
+      clickLoc({ zone: 'board', x: c.gx, y: c.gy - CFG.ROWS / 2 });
+    });
+    view.canvas.addEventListener('pointermove', (ev) => {
+      const c = view.pick(ev.clientX, ev.clientY); hover3d = c;
+      if (!c || !g) return;
+      if (mode === 'prep' && c.gy >= CFG.ROWS / 2 && c.gy < CFG.ROWS && c.gx >= 0 && c.gx < CFG.COLS) {
+        const u = g.me.board[c.gy - CFG.ROWS / 2][c.gx]; if (u) inspectDef(UNIT_BY_ID[u.id], u.star);
+      } else if (mode === 'battle' && bt) {
+        const u = bt.units.find((q) => q.alive && Math.round(q.x) === c.gx && Math.round(q.y) === c.gy);
+        if (u) inspectDef(u.def, u.star);
+      }
+    });
+    view.canvas.addEventListener('pointerleave', () => { hover3d = null; });
+    $('#btnView').onclick = () => setView3d(!use3d);
+    setView3d(true);
   }
 
   // ---------- 메인 루프 ----------
@@ -557,10 +640,11 @@
     flash = flash.map((f) => Math.max(0, f - dt));
     shake = Math.max(0, shake - dt * 30);
     fx = fx.filter((e) => (e.life -= dt) > 0);
-    if (g || mode === 'menu') drawBoard();
+    if (use3d && view) view.update(build3dState(), dt);
+    else if (g || mode === 'menu') drawBoard();
     requestAnimationFrame(frame);
   }
   // 신규 시작
-  drawBoard(); showMenu(); requestAnimationFrame(frame);
+  initView(); drawBoard(); showMenu(); requestAnimationFrame(frame);
   window.__SC_DEBUG = { get g() { return g; }, get bt() { return bt; }, get mode() { return mode; }, startBattle, nextRound, skip: () => { while (bt && !bt.over) S.step(bt); } };
 })();

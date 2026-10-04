@@ -13,7 +13,7 @@ for (let s = 1; s <= N; s++) {
     const results = [];
     g.pairs.forEach((pair) => {
       const st = g.setupsFor(pair);
-      const bt = S.createBattle(st.A, st.B, { round: g.round, event: g.event });
+      const bt = S.createBattle(st.A, st.B, { round: g.round, event: g.event, terrain: g.terrain });
       // 30초 시점 스냅샷
       while (!bt.over && bt.t < 30) S.step(bt);
       const snap = bt.over ? null : { a: bt.units.filter((u) => u.alive && u.side === 0), b: bt.units.filter((u) => u.alive && u.side === 1), nex: bt.nex.map((n) => n && n.hp) };

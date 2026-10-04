@@ -1,6 +1,16 @@
 /* 데이터 정의: 종족/유닛/시너지/증강. 수치는 모두 초안(플레이테스트로 조정). */
 (function (root) {
   const COLS = 7, ROWS = 8;
+  // ---- 육각 격자(odd-r): 홀수 행이 오른쪽으로 반 칸 밀려 있다. 이웃은 6방향. ----
+  const HEX_H = 0.8660254;
+  const hexWorld = (col, row) => ({ x: col + ((row & 1) ? 0.5 : 0), z: row * HEX_H });
+  const hexDist = (c1, r1, c2, r2) => {
+    const ax = c1 - (r1 - (r1 & 1)) / 2, az = r1, bx = c2 - (r2 - (r2 & 1)) / 2, bz = r2;
+    return Math.max(Math.abs(ax - bx), Math.abs(az - bz), Math.abs((-ax - az) - (-bx - bz)));
+  };
+  const HEX_EVEN = [[1, 0], [-1, 0], [0, -1], [-1, -1], [0, 1], [-1, 1]];
+  const HEX_ODD = [[1, 0], [-1, 0], [1, -1], [0, -1], [1, 1], [0, 1]];
+  const hexNeighbors = (col, row) => ((row & 1) ? HEX_ODD : HEX_EVEN);
   const STAR = { 1: 1, 2: 1.8, 3: 3.2 };
 
   const RACES = {
@@ -11,45 +21,56 @@
 
   // as: 공격 간격(초), range: 칸, ms: 이동속도(칸/초), nx: 넥서스 피해 배율
   // skill: {k, v(수치), mana(필요 마나), ...}
-  const U = (o) => Object.assign({ armor: 0, ms: 2, nx: 1, tags: [], skill: null }, o);
+  const U = (o) => Object.assign({ armor: 0, ms: 2, nx: 1, tags: [], skill: null, air: false, hits: 'both', aaMul: 1 }, o);
   const UNITS = [
     // ---- 연합군 ----
     U({ id: 'rifle', race: 'union', name: '소총병', cost: 1, hp: 450, atk: 28, as: 0.8, range: 3, armor: 1, tags: ['range'] }),
-    U({ id: 'shield', race: 'union', name: '방패병', cost: 1, hp: 700, atk: 22, as: 1.0, range: 1, armor: 4, tags: ['guard'],
+    U({ id: 'shield', race: 'union', name: '방패병', cost: 1, hp: 700, atk: 22, as: 1.0, range: 1, armor: 4, tags: ['guard'], hits: 'ground',
         skill: { k: 'shield', v: 220, mana: 65 } }),
     U({ id: 'medic', race: 'union', name: '의무병', cost: 2, hp: 500, atk: 14, as: 1.0, range: 3, armor: 0, tags: ['range'],
         skill: { k: 'heal', v: 260, mana: 45 } }),
-    U({ id: 'tank', race: 'union', name: '공성전차', cost: 3, hp: 800, atk: 70, as: 1.8, range: 5, armor: 3, nx: 1.6, ms: 1.6, tags: ['siege', 'range'] }),
+    U({ id: 'tank', race: 'union', name: '공성전차', cost: 3, hp: 800, atk: 70, as: 1.8, range: 5, armor: 3, nx: 1.6, ms: 1.6, tags: ['siege', 'range'], hits: 'ground' }),
     U({ id: 'ghost', race: 'union', name: '그림자 요원', cost: 3, hp: 520, atk: 42, as: 1.1, range: 4, armor: 1, ms: 2.4, tags: ['infil', 'range'],
         skill: { k: 'stun', v: 80, dur: 1.5, mana: 60 } }),
-    U({ id: 'warship', race: 'union', name: '전함', cost: 5, hp: 2200, atk: 105, as: 1.6, range: 4, armor: 6, nx: 1.5, ms: 1.5, tags: ['siege', 'range'],
+    U({ id: 'warship', race: 'union', name: '전함', cost: 5, hp: 2200, atk: 105, as: 1.6, range: 4, armor: 6, nx: 1.5, ms: 1.5, tags: ['air', 'siege', 'range'], air: true,
         skill: { k: 'aoe', v: 260, radius: 1.5, mana: 70 } }),
     // ---- 군체 ----
-    U({ id: 'zergling', race: 'swarm', name: '갉이', cost: 1, hp: 350, atk: 24, as: 0.55, range: 1, ms: 2.8, tags: ['melee'] }),
+    U({ id: 'zergling', race: 'swarm', name: '갉이', cost: 1, hp: 350, atk: 24, as: 0.55, range: 1, ms: 2.8, tags: ['melee'], hits: 'ground' }),
     U({ id: 'spitter', race: 'swarm', name: '독침충', cost: 2, hp: 450, atk: 36, as: 1.0, range: 3, tags: ['range'] }),
-    U({ id: 'burrower', race: 'swarm', name: '땅굴벌레', cost: 2, hp: 600, atk: 30, as: 0.9, range: 1, ms: 2.6, tags: ['infil', 'melee'] }),
-    U({ id: 'crusher', race: 'swarm', name: '분쇄수', cost: 3, hp: 1150, atk: 52, as: 1.3, range: 1, armor: 5, tags: ['guard', 'melee'],
+    U({ id: 'burrower', race: 'swarm', name: '땅굴벌레', cost: 2, hp: 600, atk: 30, as: 0.9, range: 1, ms: 2.6, tags: ['infil', 'melee'], hits: 'ground' }),
+    U({ id: 'crusher', race: 'swarm', name: '분쇄수', cost: 3, hp: 1150, atk: 52, as: 1.3, range: 1, armor: 5, tags: ['guard', 'melee'], hits: 'ground',
         skill: { k: 'shield', v: 300, mana: 70 } }),
     U({ id: 'queen', race: 'swarm', name: '여왕', cost: 4, hp: 800, atk: 38, as: 1.0, range: 3, armor: 1, tags: ['range'],
         skill: { k: 'haste', v: 0.4, dur: 5, radius: 3, mana: 50 } }),
-    U({ id: 'colossus', race: 'swarm', name: '거신 괴수', cost: 5, hp: 3000, atk: 125, as: 1.5, range: 1, armor: 4, nx: 1.4, tags: ['siege', 'melee'],
+    U({ id: 'colossus', race: 'swarm', name: '거신 괴수', cost: 5, hp: 3000, atk: 125, as: 1.5, range: 1, armor: 4, nx: 1.4, tags: ['siege', 'melee'], hits: 'ground',
         skill: { k: 'stun', v: 120, dur: 1.5, mana: 60 } }),
     // ---- 성역 ----
-    U({ id: 'zealot', race: 'sanct', name: '광전사', cost: 1, hp: 500, atk: 30, as: 0.9, range: 1, armor: 1, tags: ['melee'] }),
-    U({ id: 'guardian', race: 'sanct', name: '수호병', cost: 2, hp: 650, atk: 26, as: 1.0, range: 1, armor: 3, tags: ['guard', 'melee'],
+    U({ id: 'zealot', race: 'sanct', name: '광전사', cost: 1, hp: 500, atk: 30, as: 0.9, range: 1, armor: 1, tags: ['melee'], hits: 'ground' }),
+    U({ id: 'guardian', race: 'sanct', name: '수호병', cost: 2, hp: 650, atk: 26, as: 1.0, range: 1, armor: 3, tags: ['guard', 'melee'], hits: 'ground',
         skill: { k: 'barrier', v: 220, radius: 2, mana: 55 } }),
     U({ id: 'stalker', race: 'sanct', name: '추적자', cost: 2, hp: 450, atk: 34, as: 1.0, range: 4, tags: ['infil', 'range'], ms: 2.4,
         skill: { k: 'blink', mana: 40 } }),
     U({ id: 'templar', race: 'sanct', name: '고위 사제', cost: 3, hp: 520, atk: 20, as: 1.0, range: 4, tags: ['range'],
         skill: { k: 'aoe', v: 240, radius: 1.5, mana: 60 } }),
-    U({ id: 'immortal', race: 'sanct', name: '불멸자', cost: 4, hp: 1300, atk: 72, as: 1.4, range: 3, armor: 4, nx: 1.2, tags: ['siege', 'range'],
+    U({ id: 'immortal', race: 'sanct', name: '불멸자', cost: 4, hp: 1300, atk: 72, as: 1.4, range: 3, armor: 4, nx: 1.2, tags: ['siege', 'range'], hits: 'ground',
         skill: { k: 'barrier', v: 350, radius: 1, mana: 60 } }),
-    U({ id: 'archon', race: 'sanct', name: '집정관', cost: 5, hp: 1800, atk: 88, as: 1.2, range: 2, armor: 2, tags: ['melee'],
+    U({ id: 'archon', race: 'sanct', name: '집정관', cost: 5, hp: 1800, atk: 88, as: 1.2, range: 2, armor: 2, tags: ['melee'], hits: 'ground',
         skill: { k: 'aoe', v: 300, radius: 1.5, mana: 55 } }),
+    // ---- 공중/대공 (입체 전장) ----
+    U({ id: 'gunship', race: 'union', name: '강습 비행정', cost: 3, hp: 600, atk: 38, as: 1.0, range: 4, armor: 2, ms: 2.2, nx: 1.2, air: true, tags: ['air', 'range'] }),
+    U({ id: 'aagun', race: 'union', name: '대공 포병', cost: 2, hp: 520, atk: 46, as: 0.9, range: 4, armor: 1, hits: 'air', aaMul: 2.0, tags: ['range', 'aa'] }),
+    U({ id: 'mutalisk', race: 'swarm', name: '비행충', cost: 2, hp: 420, atk: 24, as: 0.7, range: 2, ms: 2.6, air: true, tags: ['air'] }),
+    U({ id: 'devourer', race: 'swarm', name: '포식자', cost: 4, hp: 1100, atk: 58, as: 1.2, range: 3, armor: 3, nx: 1.3, air: true, tags: ['air', 'siege'],
+        skill: { k: 'aoe', v: 180, radius: 1.2, mana: 70 } }),
+    U({ id: 'spore', race: 'swarm', name: '포자 군체', cost: 2, hp: 560, atk: 40, as: 0.9, range: 4, hits: 'air', aaMul: 2.0, tags: ['range', 'aa'] }),
+    U({ id: 'phoenix', race: 'sanct', name: '광자 비행체', cost: 2, hp: 400, atk: 28, as: 0.8, range: 3, ms: 2.5, air: true, tags: ['air', 'range'] }),
+    U({ id: 'carrier', race: 'sanct', name: '모함', cost: 5, hp: 1900, atk: 68, as: 1.3, range: 5, armor: 4, ms: 1.6, nx: 1.5, air: true, tags: ['air', 'siege', 'range'],
+        skill: { k: 'barrier', v: 250, radius: 2, mana: 70 } }),
+    U({ id: 'skyguard', race: 'sanct', name: '공중 요격수', cost: 3, hp: 700, atk: 56, as: 1.0, range: 5, armor: 2, hits: 'air', aaMul: 2.0, tags: ['range', 'aa'] }),
   ];
   const UNIT_BY_ID = Object.fromEntries(UNITS.map((u) => [u.id, u]));
 
-  const ROLE_NAMES = { infil: '침투', siege: '공성', guard: '수비', melee: '근접', range: '원거리' };
+  const ROLE_NAMES = { infil: '침투', siege: '공성', guard: '수비', melee: '근접', range: '원거리', air: '공중', aa: '대공' };
 
   // 시너지: 보드 위 "서로 다른 유닛 종류" 수 기준
   const SYNERGIES = {
@@ -58,6 +79,7 @@
     sanct: { name: '성역', kind: 'race', steps: [2, 4], desc: ['아군 성역 체력 +20%', '아군 성역 체력 +45%'] },
     infil: { name: '침투', kind: 'role', steps: [2, 3], desc: ['침투 유닛 이동속도 +30%', '+ 침투 유닛 넥서스 피해 +50%'] },
     siege: { name: '공성', kind: 'role', steps: [2, 3], desc: ['공성 유닛 넥서스 피해 +30%', '넥서스 피해 +70%, 사거리 +1'] },
+    air: { name: '공중', kind: 'role', steps: [2, 3], desc: ['공중 유닛 체력 +15%', '+ 공중 유닛 이동속도 +20%, 넥서스 피해 +40%'] },
     guard: { name: '수비', kind: 'role', steps: [2, 3], desc: ['아군 전체 방어력 +3', '방어력 +6, 넥서스 방벽 +600'] },
   };
 
@@ -77,6 +99,8 @@
     A({ id: 'snipe', name: '넥서스 저격', rarity: 'gold', cat: '넥서스', desc: '넥서스 대상 피해 +50%', fx: (m) => (m.nexusDmgMul *= 1.5) }),
     A({ id: 'wall', name: '방벽 발생기', rarity: 'silver', cat: '넥서스', desc: '넥서스 방벽 +1000', fx: (m) => (m.nexusShield += 1000) }),
     A({ id: 'repair', name: '자동 수리', rarity: 'gold', cat: '넥서스', desc: '매 라운드 넥서스 HP 6% 회복', fx: (m) => (m.nexusRegen += 0.06) }),
+    A({ id: 'sky', name: '제공권 장악', rarity: 'gold', cat: '전투', desc: '공중 유닛 공격력·체력 +20%', fx: (m) => (m.airMul *= 1.2) }),
+    A({ id: 'flak', name: '대공 포대', rarity: 'silver', cat: '넥서스', desc: '반격 포탑이 공중 유닛에게 2배 피해 (포탑 +40)', fx: (m) => { m.flak = true; m.turret += 40; } }),
     A({ id: 'turret', name: '반격 포탑', rarity: 'gold', cat: '넥서스', desc: '넥서스가 사거리 4 내 적을 초당 70 피해로 공격', fx: (m) => (m.turret += 70) }),
     A({ id: 'decoy', name: '교란 장막', rarity: 'gold', cat: '넥서스', desc: '적 침투 유닛은 전투 시작 후 5초간 이동 불가', fx: (m) => (m.decoy = true) }),
     A({ id: 'gamble', name: '도박꾼', rarity: 'gold', cat: '위험', desc: '저격 선언 성공/승리 시 미네랄 +3 추가 (선언 패배 시 피해는 그대로)', fx: (m) => (m.gambler = true) }),
@@ -107,9 +131,20 @@
   ];
   const EVENT_BY_ID = Object.fromEntries(EVENTS.map((e) => [e.id, e]));
 
+  // 지형(절벽): 지상 유닛만 막는다. 공중 유닛은 무시. 준비 단계에서 미리 공개.
+  const rows = (ys, xs) => ys.flatMap((y) => xs.map((x) => [x, y]));
+  const TERRAINS = [
+    { id: 'canyon', name: '협곡', desc: '중앙 3칸만 열려 있는 좁은 길. 지상 병력이 한곳으로 몰립니다.', cells: rows([3, 4], [0, 1, 5, 6]) },
+    { id: 'flank', name: '측면 샛길', desc: '중앙이 절벽. 양 옆 2칸 길로만 지나갈 수 있어 샛길 침투가 가능합니다.', cells: rows([3, 4], [2, 3, 4]) },
+    { id: 'rift', name: '균열', desc: '양쪽 가장자리 1칸만 열린 지형. 가장자리를 차지하는 쪽이 유리합니다.', cells: rows([3, 4], [1, 2, 3, 4, 5]) },
+    { id: 'tunnel', name: '땅굴 지대', desc: '가장자리에 땅굴 입구가 열립니다. 침투 유닛이 입구에 들어가면 적 넥서스 바로 옆으로 나옵니다.', cells: [],
+      portals: [{ side: 0, in: [0, 4], out: [2, 0] }, { side: 0, in: [6, 4], out: [4, 0] }, { side: 1, in: [6, 3], out: [4, 7] }, { side: 1, in: [0, 3], out: [2, 7] }] },
+  ];
+  const TERRAIN_BY_ID = Object.fromEntries(TERRAINS.map((t) => [t.id, t]));
+
   const CFG = {
     COLS, ROWS,
-    NEXUS_HP: 6000, ATK_SCALE: 1.4, MANA_HIT: 3, NEXUS_SHIELD: 800, NEXUS_ARMOR: 8, NEXUS_R: 0.5,
+    NEXUS_HP: 3600, NEXUS_TURRET: 50, GAMBIT_NX: 1.25, GAMBIT_MS: 1.15, LOSS_BASE: 80, LOSS_PER: 34, NEXUS_DMG_SCALE: 0.5, ATK_SCALE: 1.4, MANA_HIT: 3, NEXUS_SHIELD: 1500, NEXUS_ARMOR: 8, NEXUS_R: 0,
     GRACE_ROUNDS: 3,              // 이 라운드까지 넥서스 직격 무효
     BATTLE_START_DELAY: 3, BERSERK_AT: 30, BERSERK_RATE: 0.1, BATTLE_MAX: 55,
     PREP_TIME: 30,
@@ -122,9 +157,9 @@
     START_MINERALS: 8, BASE_INCOME: 5,
     TIMINGS: [{ round: 6, tech: 3 }, { round: 11, tech: 4 }, { round: 16, tech: 5 }], TIMING_LEN: 2, TIMING_ATK: 1.12, TIMING_NX: 1.2,
     DECOY_COST: 1, MAX_DECOY: 2,
-    MAX_ROUNDS: 30, EVENT_FROM: 4, EVENT_CHANCE: 0.4,
+    MAX_ROUNDS: 30, EVENT_FROM: 4, EVENT_CHANCE: 0.4, TERRAIN_FROM: 3, TERRAIN_CHANCE: 0.45,
   };
 
-  const out = { COLS, ROWS, STAR, RACES, UNITS, UNIT_BY_ID, ROLE_NAMES, SYNERGIES, AUGMENTS, AUG_BY_ID, COMMANDERS, CMD_BY_ID, EVENTS, EVENT_BY_ID, CFG };
+  const out = { hex: { world: hexWorld, dist: hexDist, neighbors: hexNeighbors, H: HEX_H }, COLS, ROWS, STAR, RACES, UNITS, UNIT_BY_ID, ROLE_NAMES, SYNERGIES, AUGMENTS, AUG_BY_ID, COMMANDERS, CMD_BY_ID, EVENTS, EVENT_BY_ID, TERRAINS, TERRAIN_BY_ID, CFG };
   if (typeof module !== 'undefined') module.exports = out; else root.SC = Object.assign(root.SC || {}, { data: out });
 })(typeof window !== 'undefined' ? window : globalThis);
