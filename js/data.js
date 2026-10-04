@@ -120,6 +120,8 @@
     SHOP_ODDS: [null, [100, 0, 0, 0, 0], [75, 25, 0, 0, 0], [55, 30, 15, 0, 0], [35, 30, 25, 10, 0], [20, 25, 30, 18, 7]],
     SHOP_SIZE: 5, BENCH: 8, REROLL: 2, EXPAND_COST: 6, MAX_EXPAND: 2,
     START_MINERALS: 8, BASE_INCOME: 5,
+    TIMINGS: [{ round: 6, tech: 3 }, { round: 11, tech: 4 }, { round: 16, tech: 5 }], TIMING_LEN: 2, TIMING_ATK: 1.12, TIMING_NX: 1.2,
+    DECOY_COST: 1, MAX_DECOY: 2,
     MAX_ROUNDS: 30, EVENT_FROM: 4, EVENT_CHANCE: 0.4,
   };
 

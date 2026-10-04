@@ -20,7 +20,7 @@
         minerals: CFG.START_MINERALS, gas: 0, tech: 1, expansions: 0, nexusHp: CFG.NEXUS_HP, maxHp: CFG.NEXUS_HP,
         bench: new Array(CFG.BENCH).fill(null), board: Array.from({ length: BOARD_H }, () => new Array(BOARD_W).fill(null)),
         shop: [], winStreak: 0, loseStreak: 0, augments: [], mods: S.newMods(), gambit: false, scouted: false,
-        commander: null, emergency: false, lastOpp: -1, aiOffset: Math.floor(this.rng() * 3), report: null, snapshot: null, rerollCount: 0,
+        commander: null, decoys: [], timing: false, emergency: false, lastOpp: -1, aiOffset: Math.floor(this.rng() * 3), report: null, snapshot: null, rerollCount: 0,
       };
     });
     this.me = this.players[0];
@@ -41,6 +41,26 @@
   };
   P.popCount = function (p) { return this.boardUnits(p).length; };
   P.mkUnit = function (id) { return { id, star: 1, uid: this.uid++ }; };
+
+  // ---- 타이밍 공격 창 / 위장 ----
+  P.timingWindow = function () {
+    return CFG.TIMINGS.find((t) => this.round >= t.round && this.round < t.round + CFG.TIMING_LEN) || null;
+  };
+  P.timingActive = function (p) { const t = this.timingWindow(); return !!t && p.tech >= t.tech; };
+  P.addDecoy = function (p) {
+    if (p.decoys.length >= CFG.MAX_DECOY) return { ok: false, msg: '위장은 최대 ' + CFG.MAX_DECOY + '개' };
+    if (p.minerals < CFG.DECOY_COST) return { ok: false, msg: '미네랄 부족' };
+    p.minerals -= CFG.DECOY_COST;
+    p.decoys.push(this.pick(UNITS.filter((u) => u.cost <= Math.max(2, p.tech))).id);
+    return { ok: true };
+  };
+  // 정찰 시 상대에게 보이는 편성 (위장 유닛 포함, 구분 불가)
+  P.scoutIds = function (match) {
+    const { B } = this.setupsFor(match);
+    const ids = B.units.map((u) => u.id);
+    if (match.kind === 'pvp') ids.push(...this.players[match.b].decoys);
+    return ids;
+  };
 
   // ---- 지휘관 ----
   P.commanderOffers = function () {
@@ -219,6 +239,7 @@
       }
       if (p.minerals - CFG.REROLL >= reserve + 2 && this.rng() < 0.6) this.reroll(p); else break;
     }
+    if (p.minerals >= 3 && this.rng() < 0.3) this.addDecoy(p);
     this.aiPlace(p);
   };
 
@@ -232,7 +253,7 @@
       const inc = this.income(p);
       if (p.human) p.lastIncome = inc;
       if (p.mods.nexusRegen) p.nexusHp = Math.min(p.maxHp, p.nexusHp + Math.round(p.maxHp * p.mods.nexusRegen));
-      p.gambit = false; p.scouted = false; p.rerollCount = 0; p.report = null;
+      p.gambit = false; p.scouted = false; p.rerollCount = 0; p.report = null; p.decoys = [];
       this.refreshShop(p);
     });
     // 증강 (AI는 즉시 선택)
@@ -285,6 +306,7 @@
   P.setupOf = function (p) {
     const mods = JSON.parse(JSON.stringify({ ...p.mods }));
     mods.nexusShield = p.mods.nexusShield - 300 * p.expansions;
+    if (this.timingActive(p)) { mods.atkMul *= CFG.TIMING_ATK; mods.nexusDmgMul *= CFG.TIMING_NX; }
     // JSON 복제 후 불리언/숫자만 필요 (함수 없음)
     return { units: this.boardUnits(p), mods, nexus: { hp: p.nexusHp, maxHp: p.maxHp }, gambit: p.gambit };
   };

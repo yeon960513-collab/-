@@ -82,6 +82,9 @@
       h = `<b>${o.name}</b> <span style="color:${RACES[o.race].color}">${RACES[o.race].name}</span><br>넥서스 ${o.nexusHp}/${o.maxHp}`;
       if (o.gambit) h += '<br><span style="color:var(--bad)">⚠ 상대가 저격을 선언했습니다</span>';
     }
+    const tw = g.timingWindow();
+    if (tw) h += `<br><span style="color:${g.timingActive(g.me) ? 'var(--good)' : 'var(--warn)'}">⏱ 타이밍 공격 창(R${tw.round}~${tw.round + CFG.TIMING_LEN - 1}): 테크 ${tw.tech} 이상이면 공격력 +${Math.round((CFG.TIMING_ATK - 1) * 100)}%, 넥서스 피해 +${Math.round((CFG.TIMING_NX - 1) * 100)}% ${g.timingActive(g.me) ? '(활성!)' : '(미충족)'}</span>`;
+    else { const nx = CFG.TIMINGS.find((t) => t.round > g.round); if (nx) h += `<br><span class="dim">⏱ 다음 타이밍 공격 창: R${nx.round} (테크 ${nx.tech})</span>`; }
     if (g.event) { const ev = EVENT_BY_ID[g.event]; h += `<br><span style="color:var(--warn)">⚡ ${ev.name}: ${ev.desc}</span>`; }
     if (scoutInfo) h += `<hr style="border-color:var(--line)"><b>정찰 결과</b><br>` + scoutInfo;
     else if (g.phase === 'prep') h += '<br><span class="dim">정찰로 편성을 확인하세요.</span>';
@@ -156,6 +159,8 @@
     $('#btnScout').textContent = free ? '정찰 (무료)' : '정찰 (⛽1)';
     $('#btnScout').disabled = !prep || (!free && me.gas < 1) || me.scouted || g.pairOf(0).kind === 'neutral';
     $('#btnGambit').disabled = !prep || g.isNeutral();
+    $('#btnDecoy').disabled = !prep || me.minerals < CFG.DECOY_COST || me.decoys.length >= CFG.MAX_DECOY || g.isNeutral();
+    $('#btnDecoy').textContent = `위장 ${me.decoys.length}/${CFG.MAX_DECOY} (◆${CFG.DECOY_COST})`;
     $('#btnGambit').classList.toggle('on', me.gambit);
     $('#btnGambit').textContent = me.gambit ? '저격 선언 중!' : '저격 선언';
     $('#btnSell').disabled = !prep || !sel;
@@ -176,7 +181,8 @@
     if (res && res.ok && okSound) sfx[okSound]();
     if (res && res.merges && res.merges.length) {
       sfx.merge();
-      res.merges.forEach((m) => { const d = UNIT_BY_ID[m.id]; log(`<b>승급!</b> ${d.name} ★${m.star}`); toast(`✨ ${d.name} ★${m.star} 승급!`); });
+      res.merges.forEach((m) => { const d = UNIT_BY_ID[m.id]; log(`<b>승급!</b> ${d.name} ★${m.star}`); toast(`✨ ${d.name} ★${m.star} 승급!`);
+        if (m.star === 3) { $('#overlay').innerHTML = `<div><div class="big star3">★★★</div><div class="sub">${d.name} 최종 진화!</div></div>`; shake = 10; setTimeout(() => { if (mode === 'prep') $('#overlay').innerHTML = ''; }, 1600); } });
     }
     sel = null; renderAll();
   }
@@ -192,15 +198,16 @@
   $('#btnReroll').onclick = () => afterAction(g.reroll(g.me), 'buy');
   $('#btnTech').onclick = () => { const r = g.techUp(g.me); afterAction(r, 'merge'); if (r.ok) log(`테크 ${g.me.tech} 달성 · 인구수 ${g.cap(g.me)}`); };
   $('#btnExpand').onclick = () => { const r = g.expand(g.me); afterAction(r, 'buy'); if (r.ok) log('확장 기지 건설: 수입 증가 / 넥서스 방벽 -300'); };
+  $('#btnDecoy').onclick = () => { const r = g.addDecoy(g.me); afterAction(r, 'buy'); if (r.ok) toast('위장 유닛 등록: 정찰하는 상대에게 가짜 편성이 보입니다'); };
   $('#btnSell').onclick = () => { if (sel) { afterAction(g.sell(g.me, sel), 'buy'); } };
   $('#btnGambit').onclick = () => { g.me.gambit = !g.me.gambit; renderAll(); if (g.me.gambit) toast('저격 선언: 수비 제외 유닛이 넥서스를 노립니다. 패배 시 피해 ×1.5'); };
   $('#btnScout').onclick = () => {
     const me = g.me; if ((!me.mods.scoutFree && me.gas < 1) || me.scouted) return;
     if (!me.mods.scoutFree) me.gas -= 1; me.scouted = true;
-    const m = myMatch(), { B } = g.setupsFor(m);
+    const ids = g.scoutIds(myMatch());
     const cnt = {};
-    B.units.forEach((u) => { cnt[u.id] = (cnt[u.id] || 0) + 1; });
-    scoutInfo = Object.keys(cnt).map((id) => `${UNIT_BY_ID[id].name}×${cnt[id]}`).join(', ') + `<br>유닛 ${B.units.length}기`;
+    ids.forEach((id) => { cnt[id] = (cnt[id] || 0) + 1; });
+    scoutInfo = Object.keys(cnt).map((id) => `${UNIT_BY_ID[id].name}×${cnt[id]}`).join(', ') + `<br>유닛 ${ids.length}기 <span class="dim">(위장이 섞여 있을 수 있음)</span>`;
     renderAll();
   };
   $('#btnGo').onclick = () => { if (mode === 'prep') startBattle(); };
@@ -244,7 +251,7 @@
     const offers = g.commanderOffers();
     const cards = offers.map((id) => { const c = CMD_BY_ID[id]; return `<div class="aug gold" data-id="${id}"><div class="r">COMMANDER</div><div class="n">${c.name}</div><div>${c.desc}</div></div>`; }).join('');
     modal(`<h2>지휘관 선택</h2><div class="dim">패시브가 한 판 내내 적용됩니다.</div><div class="row">${cards}</div>`, (m) => {
-      m.querySelectorAll('.aug').forEach((el) => (el.onclick = () => { g.chooseCommander(g.me, el.dataset.id); closeModal(); nextRound(); }));
+      m.querySelectorAll('.aug').forEach((el) => (el.onclick = () => { g.chooseCommander(g.me, el.dataset.id); closeModal(); nextRound(); maybeTutorial(); }));
     });
   }
   function nextRound() {
@@ -356,6 +363,29 @@
       <table class="t"><tr><th>순위</th><th>플레이어</th><th>주 종족</th><th>넥서스</th></tr>${rows}</table>
       <div class="row"><button id="again" class="primary">다시 하기</button></div>`, (m) => { m.querySelector('#again').onclick = showMenu; });
   }
+  const TUT = [
+    ['① 상점과 벤치', '아래 상점 카드를 클릭하면 유닛을 구매해 벤치에 놓습니다. <b>같은 유닛 3개</b>를 모으면 ★ 승급합니다.'],
+    ['② 배치', '벤치 유닛을 클릭한 뒤 <b>아래쪽 보드 칸</b>을 클릭해 배치하세요. 인구수(👥)만큼만 배치할 수 있고, 테크업으로 늘립니다.'],
+    ['③ 시너지', '서로 다른 유닛 종류가 2~4개 모이면 종족/역할 시너지가 발동합니다. 오른쪽 패널에서 확인하세요.'],
+    ['④ 승리 조건', '1:1 전투에서 <b>상대 유닛 전멸</b> 또는 <b>상대 넥서스 파괴</b>로 이깁니다. 전투는 1분 안에 끝나며 30초부터 공격속도가 계속 빨라집니다.'],
+    ['⑤ 넥서스 전략', '침투 유닛은 넥서스로 직행합니다. <b>저격 선언</b>은 한 방 승부(패배 시 피해 ×1.5). <b>정찰</b>로 상대 편성을, <b>위장</b>으로 가짜 편성을 보여줄 수 있어요. 초반 3라운드는 넥서스가 무적입니다.'],
+  ];
+  function maybeTutorial() {
+    let seen = false;
+    try { seen = localStorage.getItem('sc_tut') === '1'; } catch (e) { /* 저장소 불가 */ }
+    if (seen) return;
+    let i = 0;
+    const show = () => {
+      const [t, body] = TUT[i];
+      modal(`<h2>튜토리얼 ${i + 1}/${TUT.length}</h2><h3>${t}</h3><p>${body}</p>
+        <div class="row"><button id="tSkip">건너뛰기</button><button id="tNext" class="primary">${i === TUT.length - 1 ? '시작!' : '다음 ▶'}</button></div>`, (m) => {
+        const done = () => { try { localStorage.setItem('sc_tut', '1'); } catch (e) { /* 무시 */ } closeModal(); };
+        m.querySelector('#tSkip').onclick = done;
+        m.querySelector('#tNext').onclick = () => { if (++i >= TUT.length) done(); else show(); };
+      });
+    };
+    show();
+  }
   function showHelp() {
     modal(`<h2>게임 방법</h2><ul>
       <li><b>승리 조건</b>: 1:1 전투에서 <b>상대 유닛 전멸</b> 또는 <b>상대 넥서스 파괴</b>. 전멸 승리하면 패자 넥서스에 피해, 넥서스가 0이 되면 탈락합니다.</li>
@@ -366,6 +396,7 @@
       <li><b>수비</b>: 전열로 길 막기, 수비 시너지, 방벽/포탑 증강. 확장은 수입이 늘지만 방벽 -300.</li>
       <li><b>증강</b>: 라운드 ${CFG.AUG_ROUNDS.join('/')}에 3택1. 중립전: 라운드 ${CFG.NEUTRAL_ROUNDS.join('/')}.</li>
       <li><b>지휘관</b>: 시작 시 3택1 패시브. <b>전장 이벤트</b>: 라운드 ${CFG.EVENT_FROM}부터 일부 라운드에 발생, 준비 단계에서 미리 공개됩니다.</li>
+      <li><b>타이밍 공격 창</b>: R6/11/16부터 2라운드간, 해당 테크 이상이면 공격력·넥서스 피해 증가. <b>위장</b>: 정찰 당하는 상대에게 가짜 유닛이 보입니다.</li>
       <li>단축키: Space 전투 시작, D 리롤, F 테크업, E 판매.</li></ul>
       <div class="row"><button class="primary" id="ok">닫기</button></div>`, (m) => (m.querySelector('#ok').onclick = closeModal));
   }
